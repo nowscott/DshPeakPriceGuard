@@ -75,6 +75,7 @@ jobs:
       - name: Publish
         run: npm publish --provenance --access public
       - name: Cut a GitHub release from the same tag
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
