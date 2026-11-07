@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -47,3 +47,11 @@ jobs:
         run: node --test test/peak.test.mjs
       - name: Publish
         run: npm publish --access public
+      - name: Cut a GitHub release from the same tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --generate-notes --title "$GITHUB_REF_NAME"
+          fi
+          echo "release ready: $GITHUB_REF_NAME"
