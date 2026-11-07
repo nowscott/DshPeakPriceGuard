@@ -71,6 +71,8 @@ const {
   refreshHolidays,
   calendarStore,
   holidayYears,
+  readHolidayCache,
+  nextFocusTarget,
   queueStore,
   settingsStore,
   clockStore,
@@ -604,11 +606,13 @@ test('the holiday feed adds days the built-in table does not know', async () => 
   assert.equal(isPeak(beijing(2027, 6, 15, 10, 0), RULE), false);
 });
 
-test('the fetched table is written to a cookie for the next launch', () => {
+test('the fetched table is written to a cookie in the compact layout', () => {
   const raw = cookieJar.get('dsh_peak_price_guard_holidays');
   assert.ok(raw, 'the cache cookie was written');
   const parsed = JSON.parse(decodeURIComponent(raw));
-  assert.deepEqual(parsed.years['2027'], ['2027-06-15']);
+  assert.equal(parsed.v, 2);
+  assert.equal(parsed.y['2027'], '06-15', 'the year prefix is stored once, not per date');
+  assert.ok(decodeURIComponent(raw).length < 512, 'two years of dates fit comfortably in one cookie');
 });
 
 test('an unreachable feed keeps the previous table instead of inventing holidays', async () => {
@@ -616,7 +620,9 @@ test('an unreachable feed keeps the previous table instead of inventing holidays
   const state = await refreshHolidays(beijing(2025, 10, 1, 10, 0), async () => {
     throw new Error('offline');
   });
-  assert.equal(state, 'synced', 'the table survives, the failed fetch does not reset it');
+  assert.equal(state, 'cached', 'the table survives as cache; a failed fetch does not reset it');
+  assert.equal(calendarStore.getSnapshot().error, 'network');
+  assert.equal(calendarStore.getSnapshot().busy, false);
   assert.deepEqual(new Map(holidayYears), before);
   assert.equal(isHolidayDate('2025-10-01'), true, 'a year without feed data still uses the built-in table');
 });
@@ -640,3 +646,106 @@ test('a covered year follows the feed, not the built-in table', async () => {
   assert.equal(isPeak(beijing(2026, 2, 17, 10, 0), RULE), true);
 });
 // #endregion
+
+// #region holiday cache compatibility
+
+test('a 0.3.x cookie is still readable after the format change', () => {
+  const legacy = JSON.stringify({ savedAt: 1_700_000_000_000, years: { 2025: ['2025-01-01', '2025-10-01'] } });
+  cookieJar.set('dsh_peak_price_guard_holidays', encodeURIComponent(legacy));
+  holidayYears.clear();
+  readHolidayCache();
+  assert.equal(isHolidayDate('2025-01-01'), true);
+  assert.equal(isHolidayDate('2025-10-02'), false);
+  const snapshot = calendarStore.getSnapshot();
+  assert.equal(snapshot.state, 'cached');
+  assert.deepEqual(snapshot.years, [2025]);
+});
+
+// #endregion
+
+// #region dialog accessibility and gate resilience
+
+/** Flatten a shimmed element tree into every element node, expanding components. */
+function flatten(node, out = []) {
+  if (node === null || node === undefined || node === false) return out;
+  if (Array.isArray(node)) {
+    for (const item of node) flatten(item, out);
+    return out;
+  }
+  if (typeof node !== 'object') return out;
+  out.push(node);
+  if (typeof node.type === 'function') {
+    flatten(node.type({ ...node.props, children: node.children }), out);
+    return out;
+  }
+  flatten(node.children, out);
+  return out;
+}
+
+test('the confirmation dialog is a labelled modal whose Tab order is trapped', () => {
+  class Sink {
+    async sendSession() {
+      return { kind: 'success' };
+    }
+  }
+  const mounted = mountClient(() => new Sink());
+  const dialog = mounted.components['peak-price-guard.confirm'];
+  queueStore.set([{ id: 9101, text: 'hello', sessionId: 's1', muteMinutes: 30, createdAt: Date.now(), settle: () => {} }]);
+  const t = (key, params) => (params === undefined ? key : `${key} ${JSON.stringify(params)}`);
+  const nodes = flatten(dialog({ t, useSessions: () => undefined }));
+  const panel = nodes.find((node) => node.props !== undefined && node.props.role === 'dialog');
+  assert.ok(panel, 'the card exposes role="dialog"');
+  assert.equal(panel.props['aria-modal'], 'true');
+  assert.equal(panel.props['aria-labelledby'], 'dsh-ppg-title');
+  assert.equal(panel.props['aria-describedby'], 'dsh-ppg-desc', 'the explanation is announced with the dialog');
+  assert.equal(typeof panel.props.onKeyDown, 'function', 'Tab is handled on the panel');
+  const title = nodes.find((node) => node.props !== undefined && node.props.id === 'dsh-ppg-title');
+  assert.equal(title.type, 'h2');
+  assert.equal(nodes.filter((node) => node.type === 'button').length, 2, 'cancel and confirm, nothing else');
+  queueStore.set([]);
+  mounted.dispose();
+});
+
+test('Tab wraps at both ends of the dialog and never escapes it', () => {
+  const first = { id: 'first' };
+  const middle = { id: 'middle' };
+  const last = { id: 'last' };
+  const items = [first, middle, last];
+  const root = { querySelectorAll: () => items, contains: (element) => items.includes(element) };
+  assert.equal(nextFocusTarget(root, last, false), first, 'forward from the last control wraps to the first');
+  assert.equal(nextFocusTarget(root, first, true), last, 'Shift+Tab from the first wraps to the last');
+  assert.equal(nextFocusTarget(root, middle, false), undefined, 'the browser handles the middle cases');
+  assert.equal(nextFocusTarget(root, middle, true), undefined);
+  assert.equal(nextFocusTarget(root, { id: 'outside' }, false), first, 'focus that escaped is pulled back');
+  assert.equal(nextFocusTarget({ querySelectorAll: () => [] }, first, false), undefined, 'an empty panel does not trap');
+  assert.equal(nextFocusTarget(null, first, false), undefined);
+});
+
+test('the gate waits for the send sink instead of giving up on the first mount', async () => {
+  class LateService {}
+  const mounted = mountClient(() => new LateService());
+  assert.equal(gateStore.getSnapshot().active, null, 'still looking, not broken');
+  LateService.prototype.sendSession = async function sendSession() {
+    return { kind: 'success' };
+  };
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(gateStore.getSnapshot().active, true, 'the retry found the sink');
+  mounted.dispose();
+});
+
+// #endregion
+
+test('the settings page says where the holiday table came from, and offers a refresh', () => {
+  class Sink {
+    async sendSession() {
+      return { kind: 'success' };
+    }
+  }
+  const mounted = mountClient(() => new Sink());
+  const page = mounted.components['peak-price-guard'];
+  const t = (key, params) => (params === undefined ? key : `${key} ${JSON.stringify(params)}`);
+  const markup = textOf(page({ t }));
+  assert.match(markup, /settings\.holidays\.(synced|cached|builtin)/);
+  assert.match(markup, /settings\.holidays\.refresh/);
+  mounted.dispose();
+});

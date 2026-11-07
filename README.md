@@ -7,7 +7,7 @@
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek%20Harness-plugin-6b5bff.svg">
   <a href="https://github.com/nowscott/DshPeakPriceGuard/actions/workflows/test.yml"><img alt="tests" src="https://github.com/nowscott/DshPeakPriceGuard/actions/workflows/test.yml/badge.svg"></a>
   <img alt="Node" src="https://img.shields.io/badge/node-%E2%89%A522-339933.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.3.0-f0b74e.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.4.0-f0b74e.svg">
 </p>
 
 <p align="center"><i>DeepSeek 有两档价格，你的手只有一双。</i></p>
@@ -48,7 +48,18 @@
 3. **兜底**：内置 2025–2026 的表，只在前两层都拿不到那一年时开口。
 
 某一年的数据一旦到手，那一年就听它的；公告改了，插件跟着改，不用等我们发新版本。
-设置页底部会告诉你现在用的是哪一层。
+
+设置页底部会写清楚现在用的是哪一层、上次什么时候更新的，旁边还有个「立即更新」。
+拉取失败不会假装没事：状态行变成琥珀色，30 分钟后自动重试（成功则回到 12 小时一次的节奏）。
+缓存是压缩过的——同一年只存一遍年份前缀，两年的假期数据仍塞得进一个 cookie。
+
+## 几个刻意的选择
+
+- **弹窗是无障碍的**：`role="dialog"` + `aria-modal`，标题与说明各自挂 id；Esc 取消、
+  打开时焦点落在「先不发」、Tab 在弹窗内循环，跑不到背后的输入框里去。
+- **闸门会等人**：挂载时如果发送接口还没组装好，按 0.4s→6.4s 退避重试几次，
+  而不是因为插件加载顺序就整场放弃。
+- **失败了要吵**：接口变了就胶囊标红、设置页顶部报警。安静地失效比报错更坑。
 
 ## 安装
 
@@ -63,11 +74,12 @@ plugin_manager install_bundle <目录绝对路径 或 npm 包名>
 ## 开发与验证
 
 ```bash
-node --test test/peak.test.mjs   # 26 项，全绿
+node --test test/peak.test.mjs   # 31 项，全绿
 ```
 
-覆盖：时段边界、节假日在线替换与兜底、下次高峰、时段解析、偏好归一化、
-发送闸门、静默、FIFO、abort、弹窗 hook 顺序、胶囊状态、cookie 持久化。
+覆盖：时段边界、节假日在线替换与兜底、压缩缓存与旧版兼容、下次高峰、时段解析、
+偏好归一化、发送闸门与加载顺序重试、静默、FIFO、abort、弹窗 hook 顺序与无障碍属性、
+Tab 焦点循环、设置页状态文案、胶囊状态、cookie 持久化。
 
 测试用 `window.__ModuleLoader__` 加一个极简 React 桩**直接执行 `client.js`**，
 所以跑的是真代码，不是它的复印件。
@@ -76,6 +88,7 @@ node --test test/peak.test.mjs   # 26 项，全绿
 
 - **依赖内部接口** `conversation.sendSession`。它不是官方扩展点，上游改名插件就会静默失效。
   所以加了自检：包装后读不回来就把胶囊标红、设置页顶部报警，而不是假装一切正常。
+  挂载时如果这个接口还没组装好，会退避重试几次，不会因为加载顺序就直接放弃。
 - 只拦**人工发送**。定时任务这类程序化 prompt 不拦——没人能替它点确认。
 - `updateQueue(steer)` 重发的是已入队的消息，入队时已经问过了，不会重复问。
   唯一的缝：特价时入队、高峰时再 steer，按请求时刻计费不会被询问。

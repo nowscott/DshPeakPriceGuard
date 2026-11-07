@@ -96,14 +96,23 @@ window.__ModuleLoader__.load({
 		// built-in table answer only when neither source has the year.
 		const HOLIDAY_FEED = 'https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master';
 		const HOLIDAY_CACHE_COOKIE = 'dsh_peak_price_guard_holidays';
-		const HOLIDAY_CACHE_MAX_AGE = 30 * 24 * 3600;
+		const HOLIDAY_CACHE_VERSION = 2;
+		const HOLIDAY_CACHE_MAX_AGE = 45 * 24 * 3600;
 		const HOLIDAY_FETCH_TIMEOUT = 6000;
 		const HOLIDAY_REFRESH_INTERVAL = 12 * 3600 * 1000;
+		const HOLIDAY_RETRY_DELAY = 30 * 60 * 1000;
 
 		/** year → `Set<YYYY-MM-DD>` of off days delivered by the feed. */
 		const holidayYears = new Map();
-		/** Last holiday-table state, for the settings page and for re-rendering the pill tip. */
-		const calendarStore = createStore({ state: 'builtin', years: [], fetchedAt: 0 });
+		/**
+		 * Last holiday-table state.
+		 * `state` is `builtin` (fallback table), `cached` (from the cookie) or
+		 * `synced` (delivered by the feed during this page's life). `error` is
+		 * `network` when every fetch failed and `partial` when only one year did.
+		 */
+		const calendarStore = createStore({ state: 'builtin', years: [], fetchedAt: 0, attemptedAt: 0, error: null, busy: false });
+		/** Guards against overlapping refreshes (startup + interval + the settings button). */
+		let holidayRefreshing = false;
 
 		/** Read one cookie by name, or `undefined` when absent or blocked. */
 		function readCookie(name) {
@@ -141,7 +150,11 @@ window.__ModuleLoader__.load({
 			return BUILTIN_HOLIDAYS.has(date);
 		}
 
-		/** Restore the last fetched table, so the first paint is already correct offline. */
+		/**
+		 * Restore the last fetched table, so the first paint is already correct offline.
+		 * Accepts both the compact layout and the original one: cookies written by
+		 * 0.3.x stay readable.
+		 */
 		function readHolidayCache() {
 			const raw = readCookie(HOLIDAY_CACHE_COOKIE);
 			if (raw === undefined) return;
@@ -151,26 +164,52 @@ window.__ModuleLoader__.load({
 			} catch (_error) {
 				return;
 			}
-			const years = parsed === null || typeof parsed !== 'object' ? undefined : parsed.years;
-			if (years === null || typeof years !== 'object') return;
-			for (const [year, dates] of Object.entries(years)) {
-				if (!Array.isArray(dates)) continue;
-				const set = new Set(dates.filter((date) => typeof date === 'string'));
-				if (set.size > 0) holidayYears.set(Number(year), set);
+			if (parsed === null || typeof parsed !== 'object') return;
+			const compact = parsed.y;
+			if (compact !== null && typeof compact === 'object') {
+				for (const [year, text] of Object.entries(compact)) {
+					if (typeof text !== 'string') continue;
+					const set = new Set();
+					for (const suffix of text.split(',')) {
+						if (/^\d{2}-\d{2}$/.test(suffix) === false) continue;
+						set.add(`${year}-${suffix}`);
+					}
+					if (set.size > 0) holidayYears.set(Number(year), set);
+				}
+			} else if (parsed.years !== null && typeof parsed.years === 'object') {
+				for (const [year, dates] of Object.entries(parsed.years)) {
+					if (!Array.isArray(dates)) continue;
+					const set = new Set(dates.filter((date) => typeof date === 'string'));
+					if (set.size > 0) holidayYears.set(Number(year), set);
+				}
 			}
 			if (holidayYears.size === 0) return;
 			calendarStore.set({
 				state: 'cached',
 				years: [...holidayYears.keys()].sort(),
-				fetchedAt: Number(parsed.savedAt) || 0,
+				fetchedAt: Number(parsed.savedAt ?? parsed.s) || 0,
+				attemptedAt: 0,
+				error: null,
+				busy: false,
 			});
 		}
 
-		/** Persist the fetched table; a month outlives any realistic gap between launches. */
+		/**
+		 * Persist the fetched table.
+		 * Dates are stored as `MM-DD` and joined, because a cookie is capped at
+		 * roughly 4 KB and the naive `["2026-01-01", …]` shape wastes half of it on
+		 * a year prefix that is identical for every entry in the group.
+		 */
 		function writeHolidayCache() {
 			const years = {};
-			for (const [year, dates] of holidayYears) years[year] = [...dates];
-			writeCookie(HOLIDAY_CACHE_COOKIE, JSON.stringify({ savedAt: Date.now(), years }), HOLIDAY_CACHE_MAX_AGE);
+			for (const [year, dates] of holidayYears) {
+				years[year] = [...dates].map((date) => date.slice(5)).sort().join(',');
+			}
+			writeCookie(
+				HOLIDAY_CACHE_COOKIE,
+				JSON.stringify({ v: HOLIDAY_CACHE_VERSION, s: Date.now(), y: years }),
+				HOLIDAY_CACHE_MAX_AGE,
+			);
 		}
 
 		/**
@@ -220,24 +259,34 @@ window.__ModuleLoader__.load({
 			// `window.fetch` must be called on `window`: extracting the method first
 			// throws "Illegal invocation" in Chromium.
 			if (typeof fetcher !== 'function') return calendarStore.getSnapshot().state;
-			const { year } = beijingParts(atMs);
-			let changed = false;
-			for (const target of [year, year + 1]) {
-				const offDays = await fetchHolidayYear(target, fetcher);
-				if (offDays === undefined) continue;
-				const previous = holidayYears.get(target);
-				if (previous === undefined || previous.size !== offDays.size) changed = true;
-				holidayYears.set(target, offDays);
+			if (holidayRefreshing) return calendarStore.getSnapshot().state;
+			holidayRefreshing = true;
+			const current = calendarStore.getSnapshot();
+			calendarStore.set({ ...current, busy: true, attemptedAt: Date.now() });
+			try {
+				const { year } = beijingParts(atMs);
+				let changed = false;
+				let delivered = 0;
+				for (const target of [year, year + 1]) {
+					const offDays = await fetchHolidayYear(target, fetcher);
+					if (offDays === undefined) continue;
+					delivered += 1;
+					const previous = holidayYears.get(target);
+					if (previous === undefined || previous.size !== offDays.size) changed = true;
+					holidayYears.set(target, offDays);
+				}
+				const years = [...holidayYears.keys()].sort();
+				const state = delivered > 0 ? 'synced' : years.length > 0 ? 'cached' : 'builtin';
+				const error = delivered === 2 ? null : delivered === 0 ? 'network' : 'partial';
+				calendarStore.set({ state, years, fetchedAt: delivered > 0 ? Date.now() : current.fetchedAt, attemptedAt: Date.now(), error, busy: false });
+				if (delivered > 0) writeHolidayCache();
+				if (changed) refreshClock();
+				return state;
+			} finally {
+				holidayRefreshing = false;
 			}
-			if (holidayYears.size === 0) {
-				calendarStore.set({ state: 'builtin', years: [], fetchedAt: 0 });
-				return 'builtin';
-			}
-			calendarStore.set({ state: 'synced', years: [...holidayYears.keys()].sort(), fetchedAt: Date.now() });
-			writeHolidayCache();
-			if (changed) refreshClock();
-			return 'synced';
 		}
+
 		// #endregion
 
 		// #region peak rules
@@ -377,6 +426,21 @@ window.__ModuleLoader__.load({
 		/** Format a clock value as `HH:mm`. */
 		function clockLabel(parts) {
 			return `${pad2(parts.hour)}:${pad2(parts.minute)}`;
+		}
+
+		/**
+		 * One line describing where the holiday table came from and how old it is.
+		 * @param {{ state: string, years: number[], fetchedAt: number, error: string | null }} calendar - the snapshot.
+		 * @param {Function} t - localized copy.
+		 */
+		function holidayStatusText(calendar, t) {
+			const years = calendar.years.join(' / ');
+			if (calendar.state !== 'synced' && calendar.state !== 'cached') return t('settings.holidays.builtin');
+			const updated = calendar.fetchedAt === 0 ? '' : clockLabel(beijingParts(calendar.fetchedAt));
+			const base = calendar.state === 'synced'
+				? t('settings.holidays.synced', { years, time: updated })
+				: t('settings.holidays.cached', { years });
+			return calendar.error === null ? base : `${base}${t('settings.holidays.retry')}`;
 		}
 
 		/** Localized "today 18:00" / "tomorrow 09:00" / "10-08 09:00". */
@@ -606,33 +670,66 @@ window.__ModuleLoader__.load({
 		 * the method back through the proxy, so a renamed upstream method turns the
 		 * status dot red instead of failing silently.
 		 */
+		/** How long to keep looking for the sink before declaring the gate broken. */
+		const GATE_RETRY_DELAYS = [400, 800, 1600, 3200, 6400];
+
 		function installGate(ctx, service) {
 			ctx.effect(() => {
-				const holder = Object.getPrototypeOf(service);
-				const original = holder === null ? undefined : holder.sendSession;
-				if (typeof original !== 'function') {
-					console.warn('[peak-price-guard] conversation composer sink not found; the send gate is inactive');
-					gateStore.set({ active: false, reason: 'missing sink' });
-					return;
-				}
-				if (original[PATCH_MARK] === true) {
-					gateStore.set({ active: service.sendSession[PATCH_MARK] === true, reason: '' });
-					return;
-				}
-				const patched = function sendSession(...args) {
-					return gate(original, this, args);
+				let disposed = false;
+				let timer;
+				let attempt = 0;
+				let holder = null;
+				let original = null;
+				let patched = null;
+				const install = () => {
+					if (disposed) return;
+					const proto = Object.getPrototypeOf(service);
+					const current = proto === null ? undefined : proto.sendSession;
+					if (typeof current !== 'function') {
+						// The conversation service may still be composing when this plugin
+						// mounts, so keep looking for a moment instead of staying off for
+						// the rest of the session.
+						if (attempt < GATE_RETRY_DELAYS.length) {
+							const delay = GATE_RETRY_DELAYS[attempt];
+							attempt += 1;
+							timer = setTimeout(install, delay);
+							return;
+						}
+						console.warn('[peak-price-guard] conversation composer sink not found; the send gate is inactive');
+						gateStore.set({ active: false, reason: 'missing sink' });
+						return;
+					}
+					if (current[PATCH_MARK] === true) {
+						let attached = false;
+						try {
+							attached = service.sendSession[PATCH_MARK] === true;
+						} catch (_error) {
+							attached = false;
+						}
+						gateStore.set({ active: attached, reason: attached ? '' : 'sink lookup bypassed the patch' });
+						return;
+					}
+					const wrapped = function sendSession(...args) {
+						return gate(current, this, args);
+					};
+					wrapped[PATCH_MARK] = true;
+					proto.sendSession = wrapped;
+					holder = proto;
+					original = current;
+					patched = wrapped;
+					let reachable = false;
+					try {
+						reachable = service.sendSession[PATCH_MARK] === true;
+					} catch (_error) {
+						reachable = false;
+					}
+					gateStore.set({ active: reachable, reason: reachable ? '' : 'sink lookup bypassed the patch' });
 				};
-				patched[PATCH_MARK] = true;
-				holder.sendSession = patched;
-				let reachable = false;
-				try {
-					reachable = service.sendSession[PATCH_MARK] === true;
-				} catch (_error) {
-					reachable = false;
-				}
-				gateStore.set({ active: reachable, reason: reachable ? '' : 'sink lookup bypassed the patch' });
+				install();
 				return () => {
-					if (holder.sendSession === patched) holder.sendSession = original;
+					disposed = true;
+					clearTimeout(timer);
+					if (holder !== null && holder.sendSession === patched) holder.sendSession = original;
 					gateStore.set({ active: null, reason: '' });
 				};
 			}, 'peak-price-guard: send gate');
@@ -688,7 +785,10 @@ window.__ModuleLoader__.load({
 			'.dsh-ppg-input{box-sizing:border-box;width:250px;font:inherit;font-size:13px;line-height:20px;padding:5px 8px;border-radius:8px;border:0.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}',
 			'.dsh-ppg-input[data-invalid="true"]{border-color:var(--dsw-alias-state-error-primary)}',
 			'.dsh-ppg-input[data-size="short"]{width:84px}',
-			'.dsh-ppg-hint{margin:6px 0 0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}',
+			'.dsh-ppg-hint{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}',
+			'.dsh-ppg-hint-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:6px}',
+			'.dsh-ppg-hint[data-tone="error"]{color:var(--dsw-alias-state-warn-primary)}',
+			'.dsh-ppg-btn[disabled]{opacity:.55;cursor:default}',
 			'.dsh-ppg-hint[data-tone="error"]{color:var(--dsw-alias-state-error-primary)}',
 			'.dsh-ppg-switch{position:relative;width:34px;height:20px;padding:0;border:none;border-radius:999px;cursor:pointer;background:var(--dsw-alias-bg-layer-2);transition:background .15s}',
 			'.dsh-ppg-switch:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}',
@@ -814,6 +914,26 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
+		 * Where Tab should go inside the dialog.
+		 * Returns `undefined` when the browser's own tab order is already right,
+		 * so the handler only intervenes at the wrap-around points.
+		 * @param {object} root - the panel element.
+		 * @param {object | null} active - `document.activeElement`.
+		 * @param {boolean} backwards - Shift+Tab.
+		 */
+		function nextFocusTarget(root, active, backwards) {
+			if (root === null || root === undefined || typeof root.querySelectorAll !== 'function') return undefined;
+			const items = [...root.querySelectorAll('button, input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])')]
+				.filter((item) => item.disabled !== true);
+			if (items.length === 0) return undefined;
+			const first = items[0];
+			const last = items[items.length - 1];
+			const inside = active !== null && active !== undefined && (typeof root.contains !== 'function' || root.contains(active));
+			if (backwards) return active === first || !inside ? last : undefined;
+			return active === last || !inside ? first : undefined;
+		}
+
+		/**
 		 * The reminder dialog: nothing while no send waits for an answer,
 		 * otherwise the oldest pending send.
 		 * @param {object} props - slot props, including the `useSessions` hook.
@@ -840,6 +960,14 @@ window.__ModuleLoader__.load({
 			const { request, title, t, focusComposer } = props;
 			const [mute, setMute] = React.useState(false);
 			const cancelRef = React.useRef(null);
+			const panelRef = React.useRef(null);
+			const onPanelKeyDown = (event) => {
+				if (event.key !== 'Tab') return;
+				const target = nextFocusTarget(panelRef.current, document.activeElement, event.shiftKey === true);
+				if (target === undefined) return;
+				event.preventDefault();
+				if (typeof target.focus === 'function') target.focus();
+			};
 			const settle = React.useCallback((approved, options) => {
 				request.settle(approved, options);
 				if (!approved && typeof focusComposer === 'function') focusComposer(request.sessionId);
@@ -867,10 +995,18 @@ window.__ModuleLoader__.load({
 			return h('div', { className: 'dsh-ppg-overlay' },
 				styleTag(DIALOG_CSS),
 				h('div', { className: 'dsh-ppg-mask', onClick: () => settle(false) }),
-				h('div', { className: 'dsh-ppg-panel', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'dsh-ppg-title' },
+				h('div', {
+					className: 'dsh-ppg-panel',
+					ref: panelRef,
+					role: 'dialog',
+					'aria-modal': 'true',
+					'aria-labelledby': 'dsh-ppg-title',
+					'aria-describedby': 'dsh-ppg-desc',
+					onKeyDown: onPanelKeyDown,
+				},
 					h('h2', { className: 'dsh-ppg-title', id: 'dsh-ppg-title' }, t('dialog.title')),
 					title === undefined || title === '' ? null : h('p', { className: 'dsh-ppg-session' }, t('dialog.session', { title })),
-					h('p', { className: 'dsh-ppg-desc' }, t('dialog.desc', { time: clockLabel(now) })),
+					h('p', { className: 'dsh-ppg-desc', id: 'dsh-ppg-desc' }, t('dialog.desc', { time: clockLabel(now) })),
 					peakNow ? h('p', { className: 'dsh-ppg-desc' }, t('dialog.next', { when: whenLabel(next, t) })) : null,
 					preview === '' ? null : h('div', null,
 						h('p', { className: 'dsh-ppg-preview-label' }, t('dialog.preview')),
@@ -961,10 +1097,17 @@ window.__ModuleLoader__.load({
 						label: t('settings.holidays.label'),
 						onChange: (next) => updateConfig({ holidaysOffPeak: next }),
 					})),
-				h('p', { className: 'dsh-ppg-hint' },
-					calendar.state === 'synced' || calendar.state === 'cached'
-						? t('settings.holidays.synced', { years: calendar.years.join(' / ') })
-						: t('settings.holidays.builtin')),
+				h('div', { className: 'dsh-ppg-hint-row' },
+					h('span', { className: 'dsh-ppg-hint', 'data-tone': calendar.error === null ? undefined : 'error' },
+						holidayStatusText(calendar, t)),
+					h('button', {
+						type: 'button',
+						className: 'dsh-ppg-btn',
+						disabled: calendar.busy,
+						onClick: () => {
+							void refreshHolidays();
+						},
+					}, calendar.busy ? t('settings.holidays.refreshing') : t('settings.holidays.refresh'))),
 				h(Row, { title: t('settings.mute.label'), description: t('settings.mute.desc') },
 					h('input', {
 						className: 'dsh-ppg-input',
@@ -1036,7 +1179,11 @@ window.__ModuleLoader__.load({
 			'settings.windows.invalid': '格式无法识别，暂时沿用上一组时段。',
 			'settings.holidays.label': '法定节假日按特价',
 			'settings.holidays.desc': '中国法定节假日全天按特价计费，不提醒。',
-			'settings.holidays.synced': '节假日数据：已同步 {years} 年，自动跟随国务院公告更新。',
+			'settings.holidays.synced': '节假日数据：已同步 {years} 年（{time} 更新）。',
+			'settings.holidays.cached': '节假日数据：本地缓存 {years} 年，正在后台更新。',
+			'settings.holidays.retry': '上次更新失败，稍后自动重试。',
+			'settings.holidays.refresh': '立即更新',
+			'settings.holidays.refreshing': '更新中…',
 			'settings.holidays.builtin': '节假日数据：使用内置表（2025–2026），联网后自动更新。',
 			'settings.mute.label': '会话静默时长（分钟）',
 			'settings.mute.desc': '确认框里“本次会话不再提醒”的有效期；填 0 则不提供该选项。',
@@ -1087,7 +1234,11 @@ window.__ModuleLoader__.load({
 			'settings.windows.invalid': 'Unrecognized format — the previous windows stay in effect.',
 			'settings.holidays.label': 'Chinese holidays bill off-peak',
 			'settings.holidays.desc': 'Public holidays are off-peak all day and never ask.',
-			'settings.holidays.synced': 'Holiday data: synced for {years}; it follows the State Council notices automatically.',
+			'settings.holidays.synced': 'Holiday data: synced for {years} (updated {time}).',
+			'settings.holidays.cached': 'Holiday data: cached for {years}; refreshing in the background.',
+			'settings.holidays.retry': ' The last refresh failed; retrying automatically.',
+			'settings.holidays.refresh': 'Refresh now',
+			'settings.holidays.refreshing': 'Refreshing…',
 			'settings.holidays.builtin': 'Holiday data: built-in table (2025–2026); it refreshes automatically when online.',
 			'settings.mute.label': 'Session silence (minutes)',
 			'settings.mute.desc': 'How long "don\'t ask again in this session" lasts; 0 hides that option.',
@@ -1126,9 +1277,20 @@ window.__ModuleLoader__.load({
 				return () => clearInterval(timer);
 			}, 'peak-price-guard: price clock');
 			ctx.effect(() => {
-				void refreshHolidays();
-				const timer = setInterval(() => void refreshHolidays(), HOLIDAY_REFRESH_INTERVAL);
-				return () => clearInterval(timer);
+				let timer;
+				let disposed = false;
+				const tick = async () => {
+					await refreshHolidays();
+					if (disposed) return;
+					// A failed refresh retries soon; a good one waits half a day.
+					const delay = calendarStore.getSnapshot().error === null ? HOLIDAY_REFRESH_INTERVAL : HOLIDAY_RETRY_DELAY;
+					timer = setTimeout(tick, delay);
+				};
+				void tick();
+				return () => {
+					disposed = true;
+					clearTimeout(timer);
+				};
 			}, 'peak-price-guard: holiday feed');
 			/** Return focus to a session's composer after a cancelled send. */
 			const focusComposer = (sessionId) => {
@@ -1166,6 +1328,7 @@ window.__ModuleLoader__.load({
 				buildRule,
 				DEFAULT_CONFIG,
 				isHolidayDate,
+				nextFocusTarget,
 				refreshHolidays,
 				readHolidayCache,
 				calendarStore,
