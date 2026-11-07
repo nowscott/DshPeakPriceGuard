@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-label="DshPeakPriceGuard — 高峰时段先问一句再发">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a0f1e"/>
+      <stop offset="0.55" stop-color="#111a2f"/>
+      <stop offset="1" stop-color="#1a2340"/>
+    </linearGradient>
+    <radialGradient id="glowRed" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ff5d5d" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#ff5d5d" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowGreen" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#38d39f" stop-opacity="0.4"/>
+      <stop offset="1" stop-color="#38d39f" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hair" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff5d5d" stop-opacity="0"/>
+      <stop offset="0.45" stop-color="#ff8a5d"/>
+      <stop offset="0.55" stop-color="#38d39f"/>
+      <stop offset="1" stop-color="#38d39f" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="400" fill="url(#bg)"/>
+  <circle cx="1090" cy="90" r="220" fill="url(#glowRed)"/>
+  <circle cx="1160" cy="330" r="200" fill="url(#glowGreen)"/>
+  <rect x="0" y="0" width="1280" height="400" fill="none" stroke="#26314d" stroke-width="2"/>
+  <rect x="40" y="392" width="1200" height="3" rx="1.5" fill="url(#hair)"/>
+
+  <g font-family="'SF Mono','JetBrains Mono','Menlo',monospace">
+    <rect x="944" y="104" width="264" height="176" rx="20" fill="#ffffff" fill-opacity="0.035" stroke="#2c3854"/>
+    <text x="972" y="140" font-size="13" letter-spacing="3" fill="#5f7396">PEAK WINDOWS</text>
+    <text x="972" y="184" font-size="26" fill="#f2f6ff">09:00 – 12:00</text>
+    <text x="972" y="222" font-size="26" fill="#f2f6ff">14:00 – 18:00</text>
+    <text x="972" y="256" font-size="14" fill="#7e8fb0">Mon–Fri · not on holidays</text>
+  </g>
+  <g font-family="'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans CJK SC',sans-serif">
+    <text x="80" y="112" font-size="18" letter-spacing="6" fill="#5f7396">DEEPSEEK HARNESS PLUGIN</text>
+    <text x="78" y="186" font-size="62" font-weight="700" fill="#f2f6ff">DshPeakPriceGuard</text>
+    <text x="80" y="238" font-size="30" fill="#a9bbdc">高峰时段，先问一句再发。</text>
+    <text x="80" y="278" font-size="19" fill="#6d80a3">DeepSeek 有两档价格，你的手只有一双。 · MIT</text>
+
+    <g transform="translate(80, 316)">
+      <rect width="286" height="46" rx="23" fill="#2a1218" stroke="#ff5d5d" stroke-opacity="0.55"/>
+      <circle cx="28" cy="23" r="6" fill="#ff5d5d"/>
+      <text x="46" y="30" font-size="17" fill="#ffb3b3">高峰时段 · 标准价</text>
+
+      <rect x="306" width="286" height="46" rx="23" fill="#0e2620" stroke="#38d39f" stroke-opacity="0.55"/>
+      <circle cx="334" cy="23" r="6" fill="#38d39f"/>
+      <text x="352" y="30" font-size="17" fill="#a7f0d6">特价时段 · 优惠价</text>
+
+      <rect x="612" width="240" height="46" rx="23" fill="#2a2110" stroke="#f0b74e" stroke-opacity="0.55"/>
+      <circle cx="640" cy="23" r="6" fill="#f0b74e"/>
+      <text x="658" y="30" font-size="17" fill="#f5d79a">等待确认</text>
+    </g>
+  </g>
+</svg>
