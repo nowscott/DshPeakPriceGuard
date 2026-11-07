@@ -77,8 +77,22 @@ plugin_manager install_bundle link:<本目录绝对路径>
 
 ## 开发与验证
 
+改动走 PR，不直接推 `main`：
+
 ```bash
-node --test test/*.test.mjs   # 31 项，全绿（npm test 等价）
+git switch -c fix/holiday-retry
+# 改代码、改版本号
+npm test                       # 31 项
+node scripts/check.mjs         # 打包自检
+git push -u origin HEAD
+gh pr create --fill            # CI 在两个 Node 版本上跑绿后再合并
+```
+
+`main` 有保护规则：必须走 PR、必须 `node 22` / `node 24` 两个检查通过、必须线性历史（用 squash 合并）。
+合并之后打 tag 才会发版——**合并决定「要不要发」，tag 决定「什么时候发」**。
+
+```bash
+npm test
 ```
 
 覆盖：时段边界、节假日在线替换与兜底、压缩缓存与旧版兼容、下次高峰、时段解析、
