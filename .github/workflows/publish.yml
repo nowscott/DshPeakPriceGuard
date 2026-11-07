@@ -45,6 +45,11 @@ jobs:
             echo "::error::tag v$tag does not match package.json $version"
             exit 1
           fi
+      - name: Toolchain
+        run: |
+          node --version
+          npm --version
+          echo "id-token endpoint: ${ACTIONS_ID_TOKEN_REQUEST_URL:+present}"
       - name: Check the packaging invariants
         run: node scripts/check.mjs
       - name: Run the behaviour checks
