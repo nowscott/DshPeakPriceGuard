@@ -62,6 +62,7 @@ jobs:
             echo "::error::could not obtain an OIDC token from GitHub"
             exit 1
           fi
+          echo "$token" | cut -d. -f2 | base64 -d 2>/dev/null | jq -c '{repository, workflow_ref, ref, event_name, repository_visibility}' || true
           code=$(curl -sS -o /tmp/exchange.json -w '%{http_code}' -X POST \
             "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/dsh-peak-price-guard" \
             -H "Authorization: Bearer ${token}")
