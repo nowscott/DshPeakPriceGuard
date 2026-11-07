@@ -1,6 +1,6 @@
 # DshPeakPriceGuard · 高峰价格提醒
 
-> DeepSeek Harness 插件 · npm 包名 `dsh-peak-price-guard` · MIT
+> DeepSeek Harness 插件 · npm 包名 `dsh-peak-price-guard` · MIT · [github.com/nowscott/DshPeakPriceGuard](https://github.com/nowscott/DshPeakPriceGuard)
 
 DeepSeek 有两档计费：北京时间**周一至周五的 09:00–12:00、14:00–18:00 是高峰（标准价）**，其余时段——晚上、夜间、周末、中国法定节假日——全天都是**特价（优惠价）**。
 
