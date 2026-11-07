@@ -78,7 +78,7 @@ plugin_manager install_bundle link:<本目录绝对路径>
 ## 开发与验证
 
 ```bash
-node --test test/peak.test.mjs   # 31 项，全绿
+node --test test/*.test.mjs   # 31 项，全绿（npm test 等价）
 ```
 
 覆盖：时段边界、节假日在线替换与兜底、压缩缓存与旧版兼容、下次高峰、时段解析、

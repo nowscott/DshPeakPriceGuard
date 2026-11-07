@@ -265,10 +265,15 @@ window.__ModuleLoader__.load({
 			calendarStore.set({ ...current, busy: true, attemptedAt: Date.now() });
 			try {
 				const { year } = beijingParts(atMs);
+				// Both years in flight at once: two sequential six-second timeouts
+				// would keep the settings button spinning for twelve.
+				const [thisYear, nextYear] = await Promise.all([
+					fetchHolidayYear(year, fetcher),
+					fetchHolidayYear(year + 1, fetcher),
+				]);
 				let changed = false;
 				let delivered = 0;
-				for (const target of [year, year + 1]) {
-					const offDays = await fetchHolidayYear(target, fetcher);
+				for (const [target, offDays] of [[year, thisYear], [year + 1, nextYear]]) {
 					if (offDays === undefined) continue;
 					delivered += 1;
 					const previous = holidayYears.get(target);
@@ -284,6 +289,10 @@ window.__ModuleLoader__.load({
 				return state;
 			} finally {
 				holidayRefreshing = false;
+				// However this returned (or threw), the refresh button must not stay
+				// disabled for the rest of the session.
+				const snapshot = calendarStore.getSnapshot();
+				if (snapshot.busy) calendarStore.set({ ...snapshot, busy: false });
 			}
 		}
 

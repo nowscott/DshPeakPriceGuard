@@ -25,4 +25,4 @@ jobs:
       - name: Check the packaging invariants
         run: node scripts/check.mjs
       - name: Run the behaviour checks
-        run: node --test test/peak.test.mjs
+        run: npm test
