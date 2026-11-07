@@ -216,7 +216,9 @@ window.__ModuleLoader__.load({
 		 * @param {Function} [fetcher] - injectable for tests.
 		 * @returns {Promise<string>} the resulting state (`builtin` / `cached` / `synced`).
 		 */
-		async function refreshHolidays(atMs = Date.now(), fetcher = window.fetch) {
+		async function refreshHolidays(atMs = Date.now(), fetcher = (url, init) => window.fetch(url, init)) {
+			// `window.fetch` must be called on `window`: extracting the method first
+			// throws "Illegal invocation" in Chromium.
 			if (typeof fetcher !== 'function') return calendarStore.getSnapshot().state;
 			const { year } = beijingParts(atMs);
 			let changed = false;
