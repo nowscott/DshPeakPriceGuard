@@ -5,7 +5,7 @@
 <p align="center">
   <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-3ddc97.svg"></a>
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek%20Harness-plugin-6b5bff.svg">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-26%20passing-3ddc97.svg">
+  <a href="https://github.com/nowscott/DshPeakPriceGuard/actions/workflows/test.yml"><img alt="tests" src="https://github.com/nowscott/DshPeakPriceGuard/actions/workflows/test.yml/badge.svg"></a>
   <img alt="Node" src="https://img.shields.io/badge/node-%E2%89%A522-339933.svg">
   <img alt="Version" src="https://img.shields.io/badge/version-0.3.0-f0b74e.svg">
 </p>
