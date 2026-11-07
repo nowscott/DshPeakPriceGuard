@@ -118,22 +118,24 @@ Tab 焦点循环、设置页状态文案、胶囊状态、cookie 持久化。
 
 ## 发布
 
-打 tag 就会自动发 npm 并建 Release（`.github/workflows/publish.yml`）：
+版本号也要走 PR——`main` 有保护，`npm version` 那种「改完直接推 main」会被拒绝。
 
 ```bash
-npm version patch   # 或 minor / major，会顺手打 tag
-git push --follow-tags
+git switch -c release/0.4.4
+npm version 0.4.4 --no-git-tag-version   # 只改 package.json，提交和 tag 由人来做
+git commit -am "chore: release 0.4.4"
+git push -u origin HEAD
+gh pr create --fill && gh pr merge --squash --delete-branch
+git switch main && git pull
+
+git tag -a v0.4.4 -m "v0.4.4" && git push origin v0.4.4
 ```
 
-没有 `NPM_TOKEN` secret，也没有会过期的字符串——用的是 npm 的
-[trusted publishing](https://docs.npmjs.com/trusted-publishers)：GitHub 用 OIDC 给这次工作流签一张
-短命令牌，npm 认「这个仓库 + 这个 workflow 文件」这个组合。首次需要在 npmjs.com 的包设置里
-登记一次（Provider=GitHub Actions、repo=`nowscott/DshPeakPriceGuard`、workflow=`publish.yml`），
-并且要在 **2 天内**完成第一次发布，否则这条配置会过期作废。
+tag 一推，`publish.yml` 自动接手：跑检查 → 用 OIDC 换一张短命令牌 → 发 npm → 用
+`--generate-notes` 建 Release。**没有任何 `NPM_TOKEN`**，靠的是 npm trusted publishing
+（一次登记：Provider=GitHub Actions、repo=`nowscott/DshPeakPriceGuard`、workflow=`publish.yml`）。
 
-工作流里还会跑 `node scripts/check.mjs`——检查 `files` 里的路径是否都存在、README 徽章版本是否
-与 `package.json` 一致、中英文字典的 key 是否对齐、每个 JS 文件能否解析。这些都不是行为测试能
-覆盖到的，但正好是打包时最容易出错的地方。
+版本号只有一个来源：`package.json`。README 里的徽章是 npm 动态徽章，不用手改。
 
 ## 许可证
 
