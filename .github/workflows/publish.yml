@@ -49,13 +49,13 @@ jobs:
         run: |
           node --version
           npm --version
-          echo "id-token endpoint: ${ACTIONS_ID_TOKEN_REQUEST_URL:+present}"
+          echo "id-token url: ${ACTIONS_ID_TOKEN_REQUEST_URL:+present} token: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+present}"
       - name: Check the packaging invariants
         run: node scripts/check.mjs
       - name: Run the behaviour checks
         run: node --test test/peak.test.mjs
       - name: Publish
-        run: npm publish --access public
+        run: npm publish --provenance --access public
       - name: Cut a GitHub release from the same tag
         env:
           GH_TOKEN: ${{ github.token }}
