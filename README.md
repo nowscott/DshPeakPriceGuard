@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-3ddc97.svg"></a>
+  <a href="https://www.npmjs.com/package/dsh-peak-price-guard"><img alt="npm" src="https://img.shields.io/npm/v/dsh-peak-price-guard?color=cb3837"></a>
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek%20Harness-plugin-6b5bff.svg">
   <a href="https://github.com/nowscott/DshPeakPriceGuard/actions/workflows/test.yml"><img alt="tests" src="https://github.com/nowscott/DshPeakPriceGuard/actions/workflows/test.yml/badge.svg"></a>
   <img alt="Node" src="https://img.shields.io/badge/node-%E2%89%A522-339933.svg">
@@ -63,13 +64,17 @@
 
 ## 安装
 
-在 DSH 的 **设置 → 插件** 里装。或者让 Agent 跑：
+在 DSH 的 **设置 → 插件** 里装，或者让 Agent 跑：
 
 ```
-plugin_manager install_bundle <目录绝对路径 或 npm 包名>
+plugin_manager install_bundle dsh-peak-price-guard
 ```
 
-目录 link 安装时，改完 `client.js` 刷新页面即可生效，不用重装。
+开发时用目录 link 安装（把本地这份挂进 profile），改完 `client.js` 刷新页面即可生效，不用重装：
+
+```
+plugin_manager install_bundle link:<本目录绝对路径>
+```
 
 ## 开发与验证
 
