@@ -45,33 +45,6 @@ jobs:
             echo "::error::tag v$tag does not match package.json $version"
             exit 1
           fi
-      - name: Toolchain
-        run: |
-          node --version
-          npm --version
-          echo "id-token url: ${ACTIONS_ID_TOKEN_REQUEST_URL:+present} token: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+present}"
-      - name: Check the packaging invariants
-        run: node scripts/check.mjs
-      - name: Run the behaviour checks
-        run: node --test test/peak.test.mjs
-      - name: Probe the trusted-publisher exchange
-        run: |
-          token=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm:registry.npmjs.org" | jq -r .value)
-          if [ -z "$token" ] || [ "$token" = "null" ]; then
-            echo "::error::could not obtain an OIDC token from GitHub"
-            exit 1
-          fi
-          echo "$token" | cut -d. -f2 | base64 -d 2>/dev/null | jq -c '{repository, workflow_ref, ref, event_name, repository_visibility}' || true
-          code=$(curl -sS -o /tmp/exchange.json -w '%{http_code}' -X POST \
-            "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/dsh-peak-price-guard" \
-            -H "Authorization: Bearer ${token}")
-          echo "exchange status: $code"
-          cat /tmp/exchange.json
-          case "$code" in
-            2*) ;;
-            *) echo "::error::npm rejected the OIDC exchange — the trusted publisher for this package does not match this workflow"; exit 1 ;;
-          esac
       - name: Publish
         run: npm publish --provenance --access public
       - name: Cut a GitHub release from the same tag

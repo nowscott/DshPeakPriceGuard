@@ -8,7 +8,6 @@
   <img alt="DSH plugin" src="https://img.shields.io/badge/DeepSeek%20Harness-plugin-6b5bff.svg">
   <a href="https://github.com/nowscott/DshPeakPriceGuard/actions/workflows/test.yml"><img alt="tests" src="https://github.com/nowscott/DshPeakPriceGuard/actions/workflows/test.yml/badge.svg"></a>
   <img alt="Node" src="https://img.shields.io/badge/node-%E2%89%A522-339933.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.4.1-f0b74e.svg">
 </p>
 
 <p align="center"><i>DeepSeek 有两档价格，你的手只有一双。</i></p>

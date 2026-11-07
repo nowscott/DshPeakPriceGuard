@@ -31,14 +31,10 @@ for (const entry of pkg.files ?? []) {
   }
 }
 
-// 2. The README version badge, the release tag and the package version are the
-//    same number; they drift apart the moment someone bumps one by hand.
+// 2. The README points at this package on npm by name: a rename cannot leave a
+//    badge quietly linking to somebody else's package.
 const readme = readFileSync(join(root, 'README.md'), 'utf8');
-const badge = /version-(\d+\.\d+\.\d+)-/.exec(readme);
-expect(badge !== null, 'README has no version badge');
-if (badge !== null) {
-  expect(badge[1] === pkg.version, `README badge says ${badge[1]}, package.json says ${pkg.version}`);
-}
+expect(readme.includes(`img.shields.io/npm/v/${pkg.name}`), `README has no npm badge for ${pkg.name}`);
 
 // 3. The Client module id is the package name; the loader keys plugins by it.
 const client = readFileSync(join(root, 'client.js'), 'utf8');
