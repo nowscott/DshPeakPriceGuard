@@ -30,7 +30,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
+          # No `registry-url` on purpose: it makes setup-node write an .npmrc
+          # containing a `_authToken` line, and an empty token there makes npm
+          # try token auth instead of the OIDC exchange.
           package-manager-cache: false
       - name: The tag and package.json must agree
         if: github.event_name == 'push'
