@@ -1,0 +1,9 @@
+# dsh-peak-price-guard — bundle patch
+#
+# One row: the Host half (a no-op that only exists so the bundle has an
+# inventory entry). The behaviour lives in the Client half, which the
+# client-modules roster picks up from this package's `dsh.client` declaration
+# and `exports["./client"]`.
+- insert:
+    - id: peak-price-guard
+      name: 'dsh-peak-price-guard'

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Peak-price Guard",
+    "description": "Reminds you before sending during DeepSeek peak (non-discount) hours and sends only after you confirm."
+  }
+}
