@@ -1,0 +1,49 @@
+name: publish
+
+# Publishing is done through npm trusted publishing (OIDC), so there is no
+# NPM_TOKEN secret to rotate or forget: GitHub signs a short-lived token for
+# this workflow, and npm accepts it because the package lists this exact
+# repository + workflow as a trusted publisher.
+#
+# One-time setup on npmjs.com → package → Settings → Trusted publishing:
+#   Provider            GitHub Actions
+#   Organization/user   nowscott
+#   Repository          DshPeakPriceGuard
+#   Workflow filename   publish.yml
+#   Allowed actions     npm publish  (stage publish is always allowed)
+# The configuration must complete its first publish within 2 days or it expires.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - name: The tag and package.json must agree
+        if: github.event_name == 'push'
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          echo "tag=$tag package=$version"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag v$tag does not match package.json $version"
+            exit 1
+          fi
+      - name: Run the behaviour checks
+        run: node --test test/peak.test.mjs
+      - name: Publish
+        run: npm publish --access public
