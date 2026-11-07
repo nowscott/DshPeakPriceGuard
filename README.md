@@ -137,6 +137,11 @@ tag 一推，`publish.yml` 自动接手：跑检查 → 用 OIDC 换一张短命
 
 版本号只有一个来源：`package.json`。README 里的徽章是 npm 动态徽章，不用手改。
 
+## 交接文档
+
+改了这么久，踩过的坑、为什么这么设计、发布链路怎么配的，都记在 [docs/handover.md](./docs/handover.md)。
+半年后回来看，或者换个人接手，先读它。
+
 ## 许可证
 
 [MIT](./LICENSE)。
