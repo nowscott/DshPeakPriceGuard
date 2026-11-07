@@ -30,7 +30,8 @@
     "icon.svg",
     "assets",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "test"
   ],
   "dsh": {
     "manifestVersion": 1,
