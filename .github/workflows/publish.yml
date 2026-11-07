@@ -68,10 +68,10 @@ jobs:
             -H "Authorization: Bearer ${token}")
           echo "exchange status: $code"
           cat /tmp/exchange.json
-          if [ "$code" != "200" ]; then
-            echo "::error::npm rejected the OIDC exchange — the trusted publisher for this package does not match this workflow"
-            exit 1
-          fi
+          case "$code" in
+            2*) ;;
+            *) echo "::error::npm rejected the OIDC exchange — the trusted publisher for this package does not match this workflow"; exit 1 ;;
+          esac
       - name: Publish
         run: npm publish --provenance --access public
       - name: Cut a GitHub release from the same tag
