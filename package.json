@@ -1,6 +1,6 @@
 {
   "name": "dsh-peak-price-guard",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "DeepSeek Harness plugin: asks before sending during DeepSeek peak (non-discount) hours, with holiday data that follows the State Council notices.",
   "license": "MIT",
   "author": "nowscott",
@@ -30,6 +30,7 @@
     "icon.svg",
     "assets",
     "README.md",
+    "README.en.md",
     "LICENSE",
     "test",
     "scripts"

@@ -518,6 +518,105 @@ window.__ModuleLoader__.load({
 		}
 		// #endregion
 
+		// #region preferences (plugin config)
+		//
+		// A Client entry never carries row config, so this module cannot read the
+		// profile patch itself. The Host half publishes the effective config as one
+		// boot global (`webserver/index-inject`), and accepts the settings page's
+		// writes on a same-origin route that persists them through `configEditor`.
+		// The cookie above stays the fallback and the cache: a profile without a
+		// web server, or a write the profile refuses, keeps working browser-local.
+		/** Boot global injected by the Host half. */
+		const HOST_CONFIG_GLOBAL = '__DSH_PEAK_PRICE_GUARD__';
+		/** Same-origin endpoint that persists one preferences document. */
+		const CONFIG_ROUTE = '/dsh-peak-price-guard/config';
+		/** A write must carry this header, so a cross-site form post cannot reach it. */
+		const CONFIG_HEADER = 'x-dsh-peak-price-guard';
+		/** Records whether the last write landed in the file or stayed in this browser. */
+		const CONFIG_SYNC_COOKIE = 'dsh_peak_price_guard_sync';
+		/** How long rapid edits coalesce before one write. */
+		const CONFIG_PUSH_DELAY = 400;
+
+		/**
+		 * The config-file preferences this page was seeded with, or `undefined`
+		 * when the Host half has no config channel here.
+		 * @returns {typeof DEFAULT_CONFIG | undefined} the seeded preferences.
+		 */
+		function readHostConfig() {
+			if (typeof globalThis === 'undefined') return undefined;
+			const injected = globalThis[HOST_CONFIG_GLOBAL];
+			if (injected === null || typeof injected !== 'object') return undefined;
+			const config = injected.config;
+			if (config === null || typeof config !== 'object') return undefined;
+			return normalizeConfig(config);
+		}
+
+		/** Where the preferences in effect live: the plugin config, or this browser. */
+		const configSyncStore = createStore({ source: 'browser', status: 'idle', error: null });
+		/** Whether this page was seeded from the plugin config at all. */
+		let configChannel = false;
+		let pushTimer;
+		let pushSeq = 0;
+
+		/**
+		 * Persist one preferences document to the plugin config, coalescing bursts.
+		 * A failure is not fatal: the cookie already holds the value, and the
+		 * `CONFIG_SYNC_COOKIE` marker keeps that copy authoritative on the next
+		 * load instead of letting the stale file value win.
+		 * @param {typeof DEFAULT_CONFIG} config - the preferences to persist.
+		 */
+		function pushConfig(config) {
+			if (configChannel !== true) return;
+			clearTimeout(pushTimer);
+			pushSeq += 1;
+			const seq = pushSeq;
+			configSyncStore.set({ source: 'file', status: 'saving', error: null });
+			pushTimer = setTimeout(() => {
+				void sendConfig(seq, config);
+			}, CONFIG_PUSH_DELAY);
+		}
+
+		/** One write; only the newest write may publish its outcome. */
+		async function sendConfig(seq, config) {
+			let failure = '';
+			const fetcher = typeof globalThis.fetch === 'function' ? globalThis.fetch : undefined;
+			if (fetcher === undefined) {
+				writeCookie(CONFIG_SYNC_COOKIE, 'local', CONFIG_COOKIE_MAX_AGE);
+				configSyncStore.set({ source: 'local', status: 'failed', error: 'no fetch' });
+				return;
+			}
+			try {
+				const response = await fetcher(CONFIG_ROUTE, {
+					method: 'POST',
+					headers: { 'content-type': 'application/json', [CONFIG_HEADER]: '1' },
+					body: JSON.stringify({ config }),
+				});
+				if (response === undefined || response.ok !== true) {
+					failure = `HTTP ${response === undefined ? '?' : response.status}`;
+				}
+			} catch (error) {
+				failure = error instanceof Error ? error.message : String(error);
+			}
+			if (seq !== pushSeq) return;
+			if (failure === '') {
+				writeCookie(CONFIG_SYNC_COOKIE, 'file', CONFIG_COOKIE_MAX_AGE);
+				configSyncStore.set({ source: 'file', status: 'saved', error: null });
+				return;
+			}
+			writeCookie(CONFIG_SYNC_COOKIE, 'local', CONFIG_COOKIE_MAX_AGE);
+			configSyncStore.set({ source: 'local', status: 'failed', error: failure });
+		}
+
+		/** One line saying where the preferences live right now. */
+		function configSourceText(sync, t) {
+			if (sync.source === 'browser') return t('settings.source.browser');
+			if (sync.source === 'local') return sync.status === 'failed' ? t('settings.source.failed') : t('settings.source.local');
+			if (sync.status === 'saving') return t('settings.source.saving');
+			if (sync.status === 'saved') return t('settings.source.saved');
+			return t('settings.source.file');
+		}
+		// #endregion
+
 		// #region stores
 		/** Stand-in for the slot's `useSessions` when the owner does not provide one. */
 		const NO_SESSIONS = () => undefined;
@@ -587,6 +686,7 @@ window.__ModuleLoader__.load({
 			const config = normalizeConfig({ ...current, ...patch });
 			settingsStore.set({ config, rule: buildRule(config) });
 			writeStoredConfig(config);
+			pushConfig(config);
 			refreshClock();
 			return config;
 		}
@@ -678,9 +778,21 @@ window.__ModuleLoader__.load({
 		 * method is captured first and restored on unload. The check below reads
 		 * the method back through the proxy, so a renamed upstream method turns the
 		 * status dot red instead of failing silently.
+		 *
+		 * The gate is also re-proven at runtime. `sendSession` is an internal
+		 * interface, and the Harness can replace it while this page stays open — a
+		 * client-side hot reload rebuilds the conversation service and drops the
+		 * patch, and the page would then quietly pass every peak-hour send. The
+		 * periodic check below re-wraps the method when it finds a fresh one, and
+		 * reports red only when the patch is present but unreachable, or when the
+		 * sink is gone altogether.
 		 */
 		/** How long to keep looking for the sink before declaring the gate broken. */
 		const GATE_RETRY_DELAYS = [400, 800, 1600, 3200, 6400];
+		/** How often an installed gate re-proves that it still sits in the send path. */
+		const GATE_HEALTH_INTERVAL = 15_000;
+		/** The last mounted gate's health check, for the Node-side behaviour test. */
+		let runGateCheck;
 
 		function installGate(ctx, service) {
 			ctx.effect(() => {
@@ -690,34 +802,42 @@ window.__ModuleLoader__.load({
 				let holder = null;
 				let original = null;
 				let patched = null;
-				const install = () => {
-					if (disposed) return;
-					const proto = Object.getPrototypeOf(service);
-					const current = proto === null ? undefined : proto.sendSession;
-					if (typeof current !== 'function') {
-						// The conversation service may still be composing when this plugin
-						// mounts, so keep looking for a moment instead of staying off for
-						// the rest of the session.
-						if (attempt < GATE_RETRY_DELAYS.length) {
-							const delay = GATE_RETRY_DELAYS[attempt];
-							attempt += 1;
-							timer = setTimeout(install, delay);
-							return;
-						}
-						console.warn('[peak-price-guard] conversation composer sink not found; the send gate is inactive');
-						gateStore.set({ active: false, reason: 'missing sink' });
-						return;
+				let status = { active: null, reason: '' };
+
+				/** Publish the gate status, skipping a write when nothing changed. */
+				const publish = (active, reason) => {
+					if (status.active === active && status.reason === reason) return;
+					status = { active, reason };
+					gateStore.set(status);
+				};
+
+				/** Whether the method the service would actually call is our wrapper. */
+				const reachable = () => {
+					try {
+						return service.sendSession[PATCH_MARK] === true;
+					} catch (_error) {
+						return false;
 					}
-					if (current[PATCH_MARK] === true) {
-						let attached = false;
-						try {
-							attached = service.sendSession[PATCH_MARK] === true;
-						} catch (_error) {
-							attached = false;
-						}
-						gateStore.set({ active: attached, reason: attached ? '' : 'sink lookup bypassed the patch' });
-						return;
+				};
+
+				/**
+				 * Wrap whichever method the shared prototype holds now.
+				 * @returns {boolean} false when there is nothing to wrap.
+				 */
+				const wrap = () => {
+					let proto;
+					let current;
+					try {
+						proto = Object.getPrototypeOf(service);
+						current = proto === null || proto === undefined ? undefined : proto.sendSession;
+					} catch (_error) {
+						return false;
 					}
+					if (typeof current !== 'function') return false;
+					if (current[PATCH_MARK] === true) return true;
+					// A replacement upstream method means our old wrapper is gone; put
+					// the original back only while it is still the one we installed.
+					if (holder !== null && holder.sendSession === patched) holder.sendSession = original;
 					const wrapped = function sendSession(...args) {
 						return gate(current, this, args);
 					};
@@ -726,20 +846,54 @@ window.__ModuleLoader__.load({
 					holder = proto;
 					original = current;
 					patched = wrapped;
-					let reachable = false;
-					try {
-						reachable = service.sendSession[PATCH_MARK] === true;
-					} catch (_error) {
-						reachable = false;
-					}
-					gateStore.set({ active: reachable, reason: reachable ? '' : 'sink lookup bypassed the patch' });
+					return true;
 				};
-				install();
+
+				/** One health pass: wrap what is there, then say whether it is in the path. */
+				const check = () => {
+					if (disposed) return;
+					if (!wrap()) {
+						// A gate that used to work and vanished is broken at once; one
+						// that has never appeared yet waits out the retry window below.
+						if (status.active === true) publish(false, 'missing sink');
+						return;
+					}
+					const attached = reachable();
+					publish(attached, attached ? '' : 'sink lookup bypassed the patch');
+				};
+
+				const run = () => {
+					check();
+					if (status.active === true) return;
+					// The conversation service may still be composing when this plugin
+					// mounts, so keep looking for a moment instead of staying off for
+					// the rest of the session.
+					if (attempt < GATE_RETRY_DELAYS.length) {
+						const delay = GATE_RETRY_DELAYS[attempt];
+						attempt += 1;
+						timer = setTimeout(() => {
+							run();
+						}, delay);
+					} else if (status.active === null) {
+						console.warn('[peak-price-guard] conversation composer sink not found; the send gate is inactive');
+						publish(false, 'missing sink');
+					}
+				};
+
+				run();
+				const health = setInterval(check, GATE_HEALTH_INTERVAL);
+				// The Node-side behaviour check runs this file outside a browser, where
+				// a live interval would keep the test process alive; a browser timer is
+				// a number and has nothing to unref.
+				if (health !== null && typeof health === 'object' && typeof health.unref === 'function') health.unref();
+				runGateCheck = check;
 				return () => {
 					disposed = true;
 					clearTimeout(timer);
+					clearInterval(health);
+					if (runGateCheck === check) runGateCheck = undefined;
 					if (holder !== null && holder.sendSession === patched) holder.sendSession = original;
-					gateStore.set({ active: null, reason: '' });
+					publish(null, '');
 				};
 			}, 'peak-price-guard: send gate');
 		}
@@ -1049,6 +1203,7 @@ window.__ModuleLoader__.load({
 			const clock = useSyncExternalStore(clockStore.subscribe, clockStore.getSnapshot, clockStore.getSnapshot);
 			const gateState = useSyncExternalStore(gateStore.subscribe, gateStore.getSnapshot, gateStore.getSnapshot);
 			const calendar = useSyncExternalStore(calendarStore.subscribe, calendarStore.getSnapshot, calendarStore.getSnapshot);
+			const sync = useSyncExternalStore(configSyncStore.subscribe, configSyncStore.getSnapshot, configSyncStore.getSnapshot);
 			const config = settings.config;
 			const [windowsDraft, setWindowsDraft] = React.useState(config.windows);
 			const [muteDraft, setMuteDraft] = React.useState(String(config.muteMinutes));
@@ -1078,6 +1233,11 @@ window.__ModuleLoader__.load({
 				styleTag(SETTINGS_CSS),
 				h('h2', { className: 'dsh-ppg-page-title' }, t('settings.title')),
 				h('p', { className: 'dsh-ppg-page-desc' }, t('settings.desc')),
+				h('p', {
+					className: 'dsh-ppg-hint',
+					role: 'status',
+					'data-tone': sync.source === 'local' && sync.status === 'failed' ? 'error' : undefined,
+				}, configSourceText(sync, t)),
 				gateState.active === false
 					? h('div', { className: 'dsh-ppg-alert', role: 'alert' }, t('settings.gateBroken'))
 					: null,
@@ -1178,7 +1338,13 @@ window.__ModuleLoader__.load({
 			'when.tomorrow': '明天 {time}',
 			'when.later': '{date} {time}',
 			'settings.title': '高峰价格提醒',
-			'settings.desc': '非特价（高峰）时段发送消息前先提醒，只有你确认后才会真正发出。时段与开关保存在本机浏览器。',
+			'settings.desc': '非特价（高峰）时段发送消息前先提醒，只有你确认后才会真正发出。时段与开关保存在插件配置里，写不进去时退回本机浏览器。',
+			'settings.source.file': '偏好保存在插件配置（cordis.patch.yml）里，换浏览器也生效。',
+			'settings.source.saved': '已写入插件配置（cordis.patch.yml）。',
+			'settings.source.saving': '正在写入插件配置…',
+			'settings.source.local': '插件配置暂时写不进去，改动只保存在本浏览器。',
+			'settings.source.failed': '写入插件配置失败，改动只保存在本浏览器。',
+			'settings.source.browser': '这里没有插件配置通道，改动只保存在本浏览器。',
 			'settings.gateBroken': '发送闸门未生效：Harness 的发送接口可能已变更，提醒不会出现。请更新本插件。',
 			'settings.enabled.label': '启用提醒',
 			'settings.enabled.desc': '关闭后任何时段都直接发送，不再弹确认框。',
@@ -1233,7 +1399,13 @@ window.__ModuleLoader__.load({
 			'when.tomorrow': 'tomorrow at {time}',
 			'when.later': '{date} at {time}',
 			'settings.title': 'Peak-price guard',
-			'settings.desc': 'Asks before sending during DeepSeek peak (non-discount) hours; a message leaves only after you confirm. Times and switches are stored in this browser.',
+			'settings.desc': 'Asks before sending during DeepSeek peak (non-discount) hours; a message leaves only after you confirm. Times and switches live in the plugin configuration, falling back to this browser when it cannot be written.',
+			'settings.source.file': 'Preferences are stored in the plugin configuration (cordis.patch.yml) and apply in any browser.',
+			'settings.source.saved': 'Saved to the plugin configuration (cordis.patch.yml).',
+			'settings.source.saving': 'Saving to the plugin configuration…',
+			'settings.source.local': 'The plugin configuration cannot be written right now; changes stay in this browser.',
+			'settings.source.failed': 'Writing the plugin configuration failed; changes stay in this browser.',
+			'settings.source.browser': 'No plugin configuration channel here; changes stay in this browser.',
 			'settings.gateBroken': 'The send gate is inactive: the Harness send entry point may have changed, so the reminder will not appear. Please update this plugin.',
 			'settings.enabled.label': 'Ask before sending',
 			'settings.enabled.desc': 'When off, messages are sent immediately at any hour.',
@@ -1273,7 +1445,20 @@ window.__ModuleLoader__.load({
 			// windows: both are live state, never carried across a reload.
 			queueStore.set([]);
 			silence.clear();
-			const config = readStoredConfig();
+			// The config file wins when the Host published one — unless a previous
+			// write failed, in which case this browser's copy is the only one that
+			// holds the user's latest choice.
+			const stored = readStoredConfig();
+			const seeded = readHostConfig();
+			configChannel = seeded !== undefined;
+			const useFileConfig = seeded !== undefined && readCookie(CONFIG_SYNC_COOKIE) !== 'local';
+			const config = useFileConfig ? seeded : stored;
+			if (useFileConfig) writeStoredConfig(config);
+			configSyncStore.set({
+				source: seeded === undefined ? 'browser' : useFileConfig ? 'file' : 'local',
+				status: 'idle',
+				error: null,
+			});
 			settingsStore.set({ config, rule: buildRule(config) });
 			// The cached holiday table lands before the first paint, so a launch
 			// without a network still shows the right tier.
@@ -1346,6 +1531,9 @@ window.__ModuleLoader__.load({
 				settingsStore,
 				clockStore,
 				gateStore,
+				configSyncStore,
+				/** Run the mounted gate's health pass without waiting for its interval. */
+				runGateCheck: () => (runGateCheck === undefined ? undefined : runGateCheck()),
 				silence,
 				updateConfig,
 			},
