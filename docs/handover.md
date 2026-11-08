@@ -2,7 +2,7 @@
 
 写给「半年后的我」和「下一个接手的人」。这里记的不是怎么用插件（那在 README），而是**为什么长成现在这样**、**哪些地方踩过坑**、**改东西要动哪根线**。
 
-最后更新：2026-11-07 · 对应版本 v0.4.3
+最后更新：2026-11-08 · 对应版本 v0.5.0
 
 ---
 
@@ -25,8 +25,9 @@ npm 包名必须小写，所以是 `dsh-peak-price-guard`。
 
 一个 **DSH Client 插件**（浏览器里跑），在 DeepSeek 高峰时段拦下「发送」，弹确认框，确认后才真正提交。
 
-- **Host 半部是空壳**：`index.js` + `cordis.patch.yml` 只为了让 bundle 里有一个可被管理的条目。
-- **所有逻辑在 `client.js`**（单文件，`__ModuleLoader__` 模块，不是构建产物）。
+- **Host 半部只干一件事**：把行配置送进页面、把页面里的改动写回配置（见下面「偏好为什么进配置文件」）。
+  闸门、日历、界面全部在 Client 半部，所以没有 Host 半部时它依然是一个完整可用的插件。
+- **界面逻辑在 `client.js`**（单文件，`__ModuleLoader__` 模块，不是构建产物）。
 - 注册了三个插槽：
   - `conversation.composer.dock` → 输入框下方的价格胶囊
   - `shell.overlay` → 确认弹窗（必须 portal 到 `document.body`，否则被 dock 裁剪）
@@ -42,17 +43,47 @@ npm 包名必须小写，所以是 `dsh-peak-price-guard`。
 - 拦下时返回 `{ kind: 'error' }`——这是 composer 自带的失败出口，会恢复草稿、保留附件，且**不弹错误提示**。
 - 装不上时不能沉默：`gateStore` 变红，胶囊显示「提醒 未生效」，设置页顶部报警。挂载时如果接口还没组装好，
   会按 0.4s→6.4s 退避重试几次（0.4.3 加的）。
+- 0.5.0 起还会**运行时复查**：每 15 秒回读一次 `service.sendSession[PATCH_MARK]`。
+  - 上游把方法换掉（前端热更新重建服务、换了实现）→ 发现 `proto.sendSession` 没有标记就重新包一次；
+  - 方法在、但通过服务读不到（实例属性遮蔽、代理换了目标）→ 标红 `sink lookup bypassed the patch`；
+  - 方法彻底没了 → 标红 `missing sink`。
+  运行时复查只能**发现并尽量自愈**，不能阻止「两次检查之间」漏掉的那一次发送——这是包内部接口的固有代价。
 
-### 偏好为什么在 cookie 里
+### 偏好怎么进配置文件（0.5.0 起）
 
-Client 半部**拿不到插件的行配置**（启动清单创建 client 条目时不带 config），而声明 `Config` 需要 Host 半部 +
-`@deepseek-ai/schemastery`，目录 link 安装时解析不到。所以偏好是本机浏览器级的：
-cookie `dsh_peak_price_guard`（主）+ `localStorage`（镜像）。
+Client 半部**拿不到插件的行配置**：启动清单（`dsh-client-modules` 的 `resolveMeta`）只读
+`dsh.client` 声明和 bundle 路径，client 条目里没有 config 字段。所以链路是：
 
-cookie 是主存储，因为 Desktop 每次启动是**随机端口**，origin 含端口 → `localStorage` 每次启动被清空；
+```
+cordis.patch.yml 行 config
+        │  apply(ctx, config)
+        ▼
+  index.js  ── webserver/index-inject ──>  globalThis.__DSH_PEAK_PRICE_GUARD__ = {config}
+        │                                          │  Client apply() 先读它
+        │                                          ▼
+        │                                    settingsStore（来源标记 file）
+        │  POST /dsh-peak-price-guard/config
+        └──  <── 设置页改动 ── configEditor.edit(entry, …) ──> profile 补丁
+```
+
+几个必须知道的细节：
+
+- **行配置只能从 Host 拿**。注入用 Web 服务器的结构化注入行（`kind: 'global'`），不是自己拼 HTML；
+  `tapIndex` 是同一件事的手工版，没必要。
+- **写入走 `configEditor`**，不是自己去改用户的 `cordis.patch.yml`。`configEditor.edit(entry, change)`
+  会保留注释和 `!!js`、串行化写入、失败回滚，并在写完后按 Loader 正常路径重启这个插件。
+  所以**每次改偏好，Host 侧的插件会重启一次**（路由和注入会重新注册）。Client 不受影响。
+- 路由 `/dsh-peak-price-guard/config` 自己注册在 `webServer` 上，因此**不经过** `/api` 的鉴权链路。
+  防滥用靠两条：必须带请求头 `x-dsh-peak-price-guard: 1`（跨站表单做不到，且会触发预检被浏览器拦下），
+  以及 `Origin` 必须等于本机 `Host`。body 上限 8KB。
+- 没有 `webServer`、没有 `configEditor`、或者 POST 失败时，**自动退回 cookie**：
+  cookie `dsh_peak_price_guard` 仍是缓存/兜底，`dsh_peak_price_guard_sync` 记住上次写没写成——
+  写失败过（值 `local`）时，下次启动**不让文件值覆盖浏览器值**，否则用户刚改的东西会被旧配置顶回去。
+- 保存偏好会加一条 override 行到 profile 补丁里（`- id: peak-price-guard` + 完整 config），
+  这是 `configEditor` 的语义：整份覆盖，不是逐键 patch。
+
+cookie 仍然是必需品，因为 Desktop 每次启动是**随机端口**，origin 含端口 → `localStorage` 每次启动被清空；
 cookie 只按 host 归属，能跨重启。
-
-> 想让偏好进配置文件，得先给插件加一个能跟 Host 通信的半部，工作量比现在整份代码都大。目前没做。
 
 ### 价格日历
 
@@ -115,6 +146,8 @@ PR 合并 → 打 tag → publish.yml
 | `workflow_dispatch` 跑完建了个叫 `main` 的 Release | `GITHUB_REF_NAME` 是分支名 | Release 步骤加 `if: startsWith(github.ref, 'refs/tags/')` |
 | 刚 `npm publish` 完 registry 里只有 `0.0.0-stage` | npm 新版「暂存发布」流程，约 1–2 分钟后才真正上线 | 等，别重复发 |
 | `npm trust ...` 命令 403 | 带 bypass 2FA 的 granular token **不能**改账号/包设置 | 只能在网页上手动点 |
+| 明明改了 `index.js`，线上行为没变 | 目录 link 只热更 **client** bundle；Host 半部的 ESM 模块还在进程缓存里 | 更新 Host 半部后**重启应用**（不是刷新页面） |
+| `curl` 打本地 GUI 一律 401 | 页面与人 API 走 Connection 的鉴权，裸 curl 没有凭据 | 别用 curl 当探针；看插件自己的路由（它不经过 `/api` 鉴权） |
 
 ### 为什么没上 release-please
 
@@ -155,11 +188,14 @@ plugin_manager install_bundle dsh-peak-price-guard@0.4.3
 ### 验证
 
 ```bash
-npm test                 # 31 项行为测试（node --test test/*.test.mjs）
+npm test                 # 45 项（node --test test/*.test.mjs）
+                         #   peak.test.mjs —— Client：直接执行 client.js
+                         #   host.test.mjs —— Host：直接调 apply()，假 ctx + 假 req/res
 node scripts/check.mjs   # 打包自检：files 路径、npm 徽章、字典 key 对齐、语法
 ```
 
-`test/` 用 `window.__ModuleLoader__` + 极简 React 桩直接执行真实的 `client.js`，不是复制品。
+`test/peak.test.mjs` 用 `window.__ModuleLoader__` + 极简 React 桩直接执行真实的 `client.js`，不是复制品。
+`test/host.test.mjs` 不依赖 Harness：`apply()` 只碰传给它的 ctx，所以测试给一个假 ctx 就够了。
 
 ---
 
@@ -175,8 +211,5 @@ node scripts/check.mjs   # 打包自检：files 路径、npm 徽章、字典 key
 
 ## 六、还没做的
 
-1. **偏好进配置文件**（需要 Host 半部 + 配置通道，大工程）
-2. **运行时自检**：现在只在挂载时检查闸门；如果运行中 `sendSession` 被替换，要等下次刷新才发现
-3. **真实界面截图**：README 里只有手绘 banner，没有插件的实际截图
-4. **英文 README**
-5. **Dependabot**：自动升级 workflow 里的 action 版本
+1. **真实界面截图**：README 里只有手绘 banner 和文字描述（英文 README 已补）
+2. **Dependabot**：自动升级 workflow 里的 action 版本

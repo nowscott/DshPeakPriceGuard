@@ -60,13 +60,62 @@ if (dictionaries.length === 2) {
 
 // 6. Every JavaScript file parses. A syntax error in a file no test imports
 //    would otherwise only surface in the browser.
-for (const file of ['client.js', 'index.js', 'scripts/check.mjs', 'test/peak.test.mjs']) {
+for (const file of ['client.js', 'index.js', 'scripts/check.mjs', 'test/peak.test.mjs', 'test/host.test.mjs']) {
   try {
     execFileSync(process.execPath, ['--check', join(root, file)], { stdio: 'pipe' });
   } catch (error) {
     failures.push(`${file} does not parse: ${error.message.split('\n')[0]}`);
   }
 }
+
+// 7. The default preferences exist in three places — the Client fallback, the
+//    Host seed, and the row config in the bundle patch — and they must agree.
+//    Drift here is invisible at build time and shows up as "the settings page
+//    says one thing, the file says another".
+const clientDefaults = Object.fromEntries(
+  [...(/const DEFAULT_CONFIG = \{([\s\S]*?)\n\t\t\};/.exec(client)?.[1] ?? '').matchAll(
+    /^\s*(\w+):\s*(.+?),\s*(?:\/\*.*)?$/gm,
+  )].map(([, key, value]) => [key, value.trim()]),
+);
+const hostSource = readFileSync(join(root, 'index.js'), 'utf8');
+const hostDefaults = Object.fromEntries(
+  [...(/const DEFAULT_CONFIG = \{([\s\S]*?)\n\};/.exec(hostSource)?.[1] ?? '').matchAll(
+    /^\s*(\w+):\s*(.+?),\s*(?:\/\*.*)?$/gm,
+  )].map(([, key, value]) => [key, value.trim()]),
+);
+const patchDefaults = Object.fromEntries(
+  [...(/(?:^|\n)\s*config:\n((?:\s{6,}\w+:.*\n)+)/.exec(patch)?.[1] ?? '').matchAll(
+    /^\s*(\w+):\s*(.+?)\s*$/gm,
+  )].map(([, key, value]) => [key, value.trim()]),
+);
+
+/** Compare the literal defaults of one source against another. */
+function compareDefaults(left, right) {
+  /** Normalize a literal so `'a'`, `a`, `true`, and `30` compare as written. */
+  const normalize = (value) => String(value).trim().replace(/^['"]|['"]$/g, '');
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length === 0 || rightKeys.length === 0) return;
+  for (const key of leftKeys) expect(rightKeys.includes(key), `the defaults disagree: "${key}" is missing on one side`);
+  for (const key of rightKeys) expect(leftKeys.includes(key), `the defaults disagree: "${key}" is missing on one side`);
+  for (const key of leftKeys.filter((name) => rightKeys.includes(name))) {
+    expect(
+      normalize(left[key]) === normalize(right[key]),
+      `the defaults disagree on "${key}": ${normalize(left[key])} vs ${normalize(right[key])}`,
+    );
+  }
+}
+// The Client names its default window spec once and reuses it in the rule
+// fallback; resolve that constant before comparing literals.
+const windowsConstant = /const DEFAULT_WINDOWS = '([^']+)'/.exec(client)?.[1];
+if (windowsConstant !== undefined) {
+  for (const [key, value] of Object.entries(clientDefaults)) {
+    if (value === 'DEFAULT_WINDOWS') clientDefaults[key] = windowsConstant;
+  }
+}
+
+compareDefaults(clientDefaults, hostDefaults);
+compareDefaults(clientDefaults, patchDefaults);
 
 if (failures.length > 0) {
   for (const failure of failures) console.error(`✖ ${failure}`);

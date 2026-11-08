@@ -77,6 +77,8 @@ const {
   settingsStore,
   clockStore,
   gateStore,
+  configSyncStore,
+  runGateCheck,
   updateConfig,
 } = plugin.__test;
 
@@ -731,6 +733,174 @@ test('the gate waits for the send sink instead of giving up on the first mount',
   await new Promise((resolve) => setTimeout(resolve, 600));
   assert.equal(gateStore.getSnapshot().active, true, 'the retry found the sink');
   mounted.dispose();
+});
+
+test('a send path replaced under the running gate is wrapped again', async () => {
+  class Sink {
+    async sendSession() {
+      return { kind: 'success' };
+    }
+  }
+  const mounted = mountClient(() => new Sink());
+  try {
+    // A client-side reload can rebuild the conversation service, which drops the
+    // prototype patch; the gate must notice and take the new method over.
+    Sink.prototype.sendSession = async function sendSession() {
+      return { kind: 'success' };
+    };
+    runGateCheck();
+    assert.equal(gateStore.getSnapshot().active, true, 'the gate is still reported active');
+    assert.equal(Sink.prototype.sendSession[Symbol.for('dsh.peak-price-guard.patched')], true, 'the replacement was wrapped');
+    await atTime(beijing(2026, 11, 4, 10, 0), async () => {
+      const pending = mounted.service.sendSession({ sessionId: 's1' }, 'hi', [], 'queue', undefined);
+      assert.equal(queueStore.getSnapshot().length, 1, 'the replacement method is gated');
+      queueStore.getSnapshot()[0].settle(true);
+      assert.deepEqual(await pending, { kind: 'success' });
+    });
+  } finally {
+    mounted.dispose();
+  }
+});
+
+test('the gate reports itself broken when the send path disappears or is bypassed', () => {
+  class Sink {
+    async sendSession() {
+      return { kind: 'success' };
+    }
+  }
+  const service = new Sink();
+  const mounted = mountClient(() => service);
+  try {
+    // A method that no longer exists: the badge must go red instead of claiming protection.
+    delete Sink.prototype.sendSession;
+    runGateCheck();
+    assert.equal(gateStore.getSnapshot().active, false);
+    assert.equal(gateStore.getSnapshot().reason, 'missing sink');
+
+    // A method that exists but is not the patched one (an own property shadowing
+    // the prototype): the tracker cannot be reached, so the gate is not in effect.
+    Sink.prototype.sendSession = async function sendSession() {
+      return { kind: 'success' };
+    };
+    runGateCheck();
+    assert.equal(gateStore.getSnapshot().active, true, 'a fresh prototype method is wrapped');
+    service.sendSession = async () => ({ kind: 'success' });
+    runGateCheck();
+    assert.equal(gateStore.getSnapshot().active, false);
+    assert.equal(gateStore.getSnapshot().reason, 'sink lookup bypassed the patch');
+  } finally {
+    mounted.dispose();
+  }
+});
+
+// #endregion
+
+// #region plugin config channel
+
+/** Publish the Host-injected config global for one test. */
+function withHostConfig(config, body) {
+  globalThis.__DSH_PEAK_PRICE_GUARD__ = { version: 1, config };
+  try {
+    return body();
+  } finally {
+    delete globalThis.__DSH_PEAK_PRICE_GUARD__;
+  }
+}
+
+test('config-file preferences seed the page and beat a stale cookie', () => {
+  class Sink {
+    async sendSession() {
+      return { kind: 'success' };
+    }
+  }
+  // A previous launch stored a different answer in this browser.
+  updateConfig({ enabled: false, muteMinutes: 5 });
+  assert.equal(settingsStore.getSnapshot().config.enabled, false);
+
+  withHostConfig({ enabled: true, windows: '00:00-24:00', holidaysOffPeak: false, muteMinutes: 90, showBadge: false }, () => {
+    const mounted = mountClient(() => new Sink(), { keepStorage: true });
+    try {
+      const config = settingsStore.getSnapshot().config;
+      assert.equal(config.enabled, true, 'the config file wins over the cookie');
+      assert.equal(config.windows, '00:00-24:00');
+      assert.equal(config.holidaysOffPeak, false);
+      assert.equal(config.muteMinutes, 90);
+      assert.equal(config.showBadge, false);
+      assert.deepEqual(configSyncStore.getSnapshot(), { source: 'file', status: 'idle', error: null });
+    } finally {
+      mounted.dispose();
+    }
+  });
+});
+
+test('a settings change is written to the plugin config route', async () => {
+  class Sink {
+    async sendSession() {
+      return { kind: 'success' };
+    }
+  }
+  const posts = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    posts.push({ url, init });
+    return { ok: true, status: 200 };
+  };
+  try {
+    withHostConfig({ ...DEFAULT_CONFIG }, () => {
+      const mounted = mountClient(() => new Sink());
+      try {
+        updateConfig({ muteMinutes: 45 });
+        assert.equal(configSyncStore.getSnapshot().status, 'saving');
+      } finally {
+        mounted.dispose();
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(posts.length, 1, 'one coalesced write');
+    assert.equal(posts[0].url, '/dsh-peak-price-guard/config');
+    assert.equal(posts[0].init.headers['x-dsh-peak-price-guard'], '1');
+    assert.deepEqual(JSON.parse(posts[0].init.body).config.muteMinutes, 45);
+    assert.deepEqual(configSyncStore.getSnapshot(), { source: 'file', status: 'saved', error: null });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('a refused write keeps the browser copy authoritative on the next load', async () => {
+  class Sink {
+    async sendSession() {
+      return { kind: 'success' };
+    }
+  }
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 409 });
+  try {
+    withHostConfig({ ...DEFAULT_CONFIG }, () => {
+      const mounted = mountClient(() => new Sink());
+      try {
+        updateConfig({ showBadge: false });
+      } finally {
+        mounted.dispose();
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(configSyncStore.getSnapshot().source, 'local');
+    assert.equal(configSyncStore.getSnapshot().status, 'failed');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // The file still says showBadge: true, but the failed write left the newer
+  // value in this browser, so the next load must not resurrect the file value.
+  withHostConfig({ ...DEFAULT_CONFIG }, () => {
+    const mounted = mountClient(() => new Sink(), { keepStorage: true });
+    try {
+      assert.equal(settingsStore.getSnapshot().config.showBadge, false);
+      assert.equal(configSyncStore.getSnapshot().source, 'local');
+    } finally {
+      mounted.dispose();
+    }
+  });
 });
 
 // #endregion
