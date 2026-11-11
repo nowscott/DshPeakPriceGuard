@@ -36,6 +36,7 @@ const DEFAULT_CONFIG = {
 	holidaysOffPeak: true,
 	muteMinutes: 30,
 	showBadge: true,
+	deepseekOnly: true,
 };
 
 /**
@@ -52,6 +53,7 @@ function normalizeConfig(raw) {
 	if (typeof source.windows === 'string') config.windows = source.windows;
 	if (typeof source.holidaysOffPeak === 'boolean') config.holidaysOffPeak = source.holidaysOffPeak;
 	if (typeof source.showBadge === 'boolean') config.showBadge = source.showBadge;
+	if (typeof source.deepseekOnly === 'boolean') config.deepseekOnly = source.deepseekOnly;
 	const minutes = Number(source.muteMinutes);
 	if (Number.isFinite(minutes) && minutes >= 0 && minutes <= 1440) config.muteMinutes = Math.round(minutes);
 	return config;
