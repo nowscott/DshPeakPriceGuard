@@ -64,6 +64,8 @@ const {
   nextPeakStart,
   beijingParts,
   parseWindows,
+  isDeepSeekProvider,
+  providerOf,
   normalizeConfig,
   buildRule,
   DEFAULT_CONFIG,
@@ -326,6 +328,88 @@ test('an off-peak send goes straight through', async () => {
       assert.deepEqual(queueStore.getSnapshot(), []);
     });
   } finally {
+    mounted.dispose();
+  }
+});
+
+/** A session argument whose `modelSelection` face reports one provider. */
+function sessionWithProvider(provider) {
+  return {
+    sessionId: 's1',
+    projections: {
+      faceOf: (name) => {
+        assert.equal(name, 'modelSelection');
+        return {
+          getSnapshot: () => ({
+            next: undefined,
+            lastUsed: { provider, model: 'some-model' },
+          }),
+        };
+      },
+    },
+  };
+}
+
+test('deepseek provider ids are recognized, including unknown deepseek-* ids', () => {
+  assert.equal(isDeepSeekProvider('deepseek-account'), true);
+  assert.equal(isDeepSeekProvider('deepseek-official'), true);
+  assert.equal(isDeepSeekProvider('deepseek'), true);
+  assert.equal(isDeepSeekProvider('z-ai'), false);
+  assert.equal(isDeepSeekProvider('openrouter'), false);
+  assert.equal(isDeepSeekProvider(undefined), false);
+  assert.equal(providerOf(sessionWithProvider('z-ai')), 'z-ai');
+  assert.equal(providerOf({ sessionId: 's1' }), undefined);
+});
+
+test('a peak-hour send on a non-DeepSeek provider goes straight through', async () => {
+  const calls = [];
+  class Sink {
+    async sendSession(...args) {
+      calls.push(args);
+      return { kind: 'success' };
+    }
+  }
+  const mounted = mountClient(() => new Sink());
+  try {
+    await atTime(beijing(2026, 11, 4, 10, 0), async () => {
+      const outcome = await mounted.service.sendSession(sessionWithProvider('z-ai'), 'glm question', [], 'queue', undefined);
+      assert.deepEqual(outcome, { kind: 'success' });
+      assert.equal(calls.length, 1, 'the non-DeepSeek send must not wait for an answer');
+      assert.deepEqual(queueStore.getSnapshot(), []);
+    });
+  } finally {
+    mounted.dispose();
+  }
+});
+
+test('a peak-hour send on a DeepSeek provider still asks, and the scope can be turned off', async () => {
+  const calls = [];
+  class Sink {
+    async sendSession(...args) {
+      calls.push(args);
+      return { kind: 'success' };
+    }
+  }
+  const mounted = mountClient(() => new Sink());
+  try {
+    await atTime(beijing(2026, 11, 4, 10, 0), async () => {
+      const pending = mounted.service.sendSession(sessionWithProvider('deepseek-account'), 'hi', [], 'queue', undefined);
+      queueStore.getSnapshot()[0].settle(true, { mute: false });
+      assert.deepEqual(await pending, { kind: 'success' });
+      assert.equal(calls.length, 1);
+
+      updateConfig({ deepseekOnly: false });
+      // The scope is off, so the peak-hour dialog asks even for a non-DeepSeek
+      // provider again; answer it to let the send through.
+      const second = mounted.service.sendSession(sessionWithProvider('z-ai'), 'glm again', [], 'queue', undefined);
+      assert.equal(queueStore.getSnapshot().length, 1);
+      queueStore.getSnapshot()[0].settle(true, { mute: false });
+      assert.deepEqual(await second, { kind: 'success' });
+      assert.equal(calls.length, 2);
+      assert.deepEqual(queueStore.getSnapshot(), []);
+    });
+  } finally {
+    updateConfig({ deepseekOnly: DEFAULT_CONFIG.deepseekOnly });
     mounted.dispose();
   }
 });

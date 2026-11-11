@@ -29,6 +29,7 @@ say yes. Off-peak it disappears entirely and never interrupts.
 | Choose "Don't send" / Esc / click the mask | Draft and attachments return to the composer, **with no error notice** (so you don't think you broke something) |
 | Press send off-peak | Straight through; the plugin may as well not exist |
 | See the small pill under the composer | Red = peak, green = off-peak, amber = waiting for your answer, red "inactive" = the upstream interface changed; check Settings |
+| Switch to a third-party model such as glm and press send | Straight through: the calendar is DeepSeek's price list, so by default only DeepSeek account / official-API sessions are guarded (the scope has a toggle in Settings) |
 
 The pill can be switched off. With it off the guard still holds sends; it just stops telling
 you so — which is why leaving it on is the better default.

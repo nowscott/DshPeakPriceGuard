@@ -92,6 +92,7 @@ test('the Host publishes the row config as a boot global', () => {
     holidaysOffPeak: false,
     muteMinutes: 12,
     showBadge: false,
+    deepseekOnly: true,
   });
 });
 
@@ -104,6 +105,7 @@ test('a row with no config (or junk) still seeds a complete, valid set', () => {
     holidaysOffPeak: true,
     muteMinutes: 30,
     showBadge: true,
+    deepseekOnly: true,
   });
 });
 
@@ -130,7 +132,7 @@ test('the config route accepts a same-origin write and persists it through confi
 
   assert.equal(res.status, 200);
   assert.deepEqual(res.body, {
-    config: { enabled: false, windows: '09:00-12:00, 14:00-18:00', holidaysOffPeak: true, muteMinutes: 30, showBadge: false },
+    config: { enabled: false, windows: '09:00-12:00, 14:00-18:00', holidaysOffPeak: true, muteMinutes: 30, showBadge: false, deepseekOnly: true },
     persisted: true,
     changed: true,
   });
@@ -142,6 +144,7 @@ test('the config route accepts a same-origin write and persists it through confi
     holidaysOffPeak: true,
     muteMinutes: 30,
     showBadge: false,
+    deepseekOnly: true,
   }, 'the written config keeps unknown keys and carries every known one');
 });
 

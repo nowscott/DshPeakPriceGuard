@@ -336,6 +336,7 @@ window.__ModuleLoader__.load({
 			holidaysOffPeak: true,
 			muteMinutes: 30,
 			showBadge: true,
+			deepseekOnly: true,
 		};
 
 		/** Coerce a stored or edited value into a complete, valid preference set. */
@@ -346,6 +347,7 @@ window.__ModuleLoader__.load({
 			if (typeof source.windows === 'string') config.windows = source.windows;
 			if (typeof source.holidaysOffPeak === 'boolean') config.holidaysOffPeak = source.holidaysOffPeak;
 			if (typeof source.showBadge === 'boolean') config.showBadge = source.showBadge;
+			if (typeof source.deepseekOnly === 'boolean') config.deepseekOnly = source.deepseekOnly;
 			const minutes = Number(source.muteMinutes);
 			if (Number.isFinite(minutes) && minutes >= 0 && minutes <= 1440) config.muteMinutes = Math.round(minutes);
 			return config;
@@ -704,6 +706,39 @@ window.__ModuleLoader__.load({
 		}
 		// #endregion
 
+		// #region model scope
+		//
+		// The peak/discount calendar is DeepSeek's price list, so by default the
+		// guard holds sends only on DeepSeek's own providers. The composer knows
+		// which provider the next send will use from the session's
+		// `modelSelection` projection (`next ?? lastUsed`, the same lookup the
+		// upstream submission state uses); provider ids starting with
+		// `deepseek` are DeepSeek itself (`deepseek-account` = DeepSeek 账号,
+		// `deepseek-official` = 官方 API). A third-party provider such as glm
+		// bills by its own price list, so its sends pass straight through.
+		/** Whether one provider id is DeepSeek's own (account or official API). */
+		function isDeepSeekProvider(provider) {
+			return typeof provider === 'string'
+				&& (provider === 'deepseek-account' || provider === 'deepseek-official' || provider.startsWith('deepseek'));
+		}
+
+		/**
+		 * The provider the next send on one session will use, or `undefined`
+		 * when the selection cannot be read.
+		 * @param {object | null | undefined} session - the session argument of `sendSession`.
+		 */
+		function providerOf(session) {
+			try {
+				const face = session === null || session === undefined ? undefined : session.projections?.faceOf?.('modelSelection');
+				const snapshot = face === undefined || face === null ? undefined : face.getSnapshot?.();
+				const selection = snapshot?.next ?? snapshot?.lastUsed;
+				return typeof selection?.provider === 'string' ? selection.provider : undefined;
+			} catch (_error) {
+				return undefined;
+			}
+		}
+		// #endregion
+
 		// #region send gate
 		const PATCH_MARK = Symbol.for('dsh.peak-price-guard.patched');
 		let requestSeq = 0;
@@ -752,6 +787,14 @@ window.__ModuleLoader__.load({
 			if (!hasText && !hasAttachments) return original.apply(receiver, args);
 			const { config, rule } = settingsStore.getSnapshot();
 			if (!config.enabled || !isPeak(Date.now(), rule)) return original.apply(receiver, args);
+			// The calendar only describes DeepSeek's own price list; with the
+			// scope on, a non-DeepSeek provider (glm, openrouter, …) passes
+			// through ungated. An unreadable selection keeps the gate, so the
+			// guard never silently disappears.
+			if (config.deepseekOnly !== false) {
+				const provider = providerOf(session);
+				if (provider !== undefined && !isDeepSeekProvider(provider)) return original.apply(receiver, args);
+			}
 			const sessionId = session === undefined || session === null ? undefined : session.sessionId;
 			if (isSilenced(sessionId)) return original.apply(receiver, args);
 			if (signal !== undefined && signal.aborted === true) return { kind: 'error' };
@@ -1041,6 +1084,7 @@ window.__ModuleLoader__.load({
 				if (next !== undefined) lines.push(t('tip.offpeak.next', { when: whenLabel(next, t) }));
 				lines.push('', t('tip.where', { section: t('settings.title') }));
 			}
+			if (settings.config.deepseekOnly !== false && state !== 'broken') lines.push(t('tip.scope'));
 			const tipText = lines.join('\n');
 			const showTip = (event) => {
 				const rect = event.currentTarget.getBoundingClientRect();
@@ -1295,6 +1339,12 @@ window.__ModuleLoader__.load({
 						label: t('settings.badge.label'),
 						onChange: (next) => updateConfig({ showBadge: next }),
 					})),
+				h(Row, { title: t('settings.deepseekOnly.label'), description: t('settings.deepseekOnly.desc') },
+					h(Toggle, {
+						checked: config.deepseekOnly !== false,
+						label: t('settings.deepseekOnly.label'),
+						onChange: (next) => updateConfig({ deepseekOnly: next }),
+					})),
 				h('div', { className: 'dsh-ppg-footer' },
 					h('span', { className: 'dsh-ppg-status', role: 'status' }, statusText),
 					h('button', {
@@ -1326,6 +1376,7 @@ window.__ModuleLoader__.load({
 			'tip.broken.line1': '发送闸门未生效：Harness 的发送接口可能已变更，高峰时段不会弹确认。',
 			'tip.broken.line2': '请更新这个插件，或到设置页查看详情。',
 			'tip.where': '可以在「设置 → {section}」里调整时段、静音和这个提示。',
+			'tip.scope': '仅拦 DeepSeek 自家模型（账号 / 官方 API）；glm 等第三方提供方不弹确认。',
 			'dialog.title': '非特价时段提醒',
 			'dialog.session': '会话：{title}',
 			'dialog.desc': '现在是北京时间 {time}，属于高峰时段，这条消息会按标准价格计费。',
@@ -1364,6 +1415,8 @@ window.__ModuleLoader__.load({
 			'settings.mute.desc': '确认框里“本次会话不再提醒”的有效期；填 0 则不提供该选项。',
 			'settings.badge.label': '显示价格档位提示',
 			'settings.badge.desc': '输入框下方显示「高峰时段 标准价」（红）/「特价时段 优惠价」（绿），悬停或聚焦可看说明。',
+			'settings.deepseekOnly.label': '只拦 DeepSeek 自家模型',
+			'settings.deepseekOnly.desc': '价格日历是 DeepSeek 的价目表：开启后仅 DeepSeek 账号 / 官方 API 的会话会弹确认，glm 等第三方提供方直接放行。',
 			'settings.reset': '恢复默认',
 			'settings.status.off': '提醒已关闭',
 			'settings.status.peak': '当前为高峰时段（标准价），{when} 恢复特价。',
@@ -1387,6 +1440,7 @@ window.__ModuleLoader__.load({
 			'tip.broken.line1': 'The send gate is inactive: the Harness send entry point may have changed, so peak-hour sends will not ask.',
 			'tip.broken.line2': 'Please update this plugin, or check the settings page.',
 			'tip.where': 'Adjust the windows, the silence window and this pill in Settings → {section}.',
+			'tip.scope': 'Guards DeepSeek’s own providers (account / official API) only; third-party providers such as glm ask nothing.',
 			'dialog.title': 'Not a discounted period',
 			'dialog.session': 'Session: {title}',
 			'dialog.desc': 'It is {time} Beijing time — a peak window, so this message bills at the standard price.',
@@ -1425,6 +1479,8 @@ window.__ModuleLoader__.load({
 			'settings.mute.desc': 'How long "don\'t ask again in this session" lasts; 0 hides that option.',
 			'settings.badge.label': 'Show the price-tier pill',
 			'settings.badge.desc': 'Shows a red “Peak · standard price” or a green “Off-peak · discounted” pill under the composer; hover or focus for details.',
+			'settings.deepseekOnly.label': 'Guard DeepSeek models only',
+			'settings.deepseekOnly.desc': 'The price calendar is DeepSeek’s price list: only sessions on the DeepSeek account or official API ask for confirmation; third-party providers such as glm pass through ungated.',
 			'settings.reset': 'Reset to defaults',
 			'settings.status.off': 'Reminders are off',
 			'settings.status.peak': 'Peak hours now (standard price); off-peak resumes {when}.',
@@ -1518,6 +1574,8 @@ window.__ModuleLoader__.load({
 				nextPeakStart,
 				beijingParts,
 				parseWindows,
+				isDeepSeekProvider,
+				providerOf,
 				normalizeConfig,
 				buildRule,
 				DEFAULT_CONFIG,

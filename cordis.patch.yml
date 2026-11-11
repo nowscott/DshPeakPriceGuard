@@ -17,3 +17,4 @@
         holidaysOffPeak: true
         muteMinutes: 30
         showBadge: true
+        deepseekOnly: true
